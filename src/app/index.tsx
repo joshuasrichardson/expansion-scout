@@ -2,6 +2,7 @@ import { useRouter } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { Logo } from '@/components/logo';
 import { PrimaryButton } from '@/components/primary-button';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
@@ -13,6 +14,8 @@ export default function HomeScreen() {
 
   return (
     <Screen>
+      <Logo variant="full" width={240} />
+
       <View style={styles.header}>
         <ThemedText type="subtitle">Good morning 👋</ThemedText>
         <ThemedText type="default" themeColor="textSecondary">

@@ -7,6 +7,9 @@ reliably demoable vertical slice**, not production completeness.
 
 Read [CLAUDE.md](./CLAUDE.md) first — it holds the product vision, brand, privacy
 framing, and architecture boundaries. This file is the ordered work backlog.
+[JUDGING_RUBRIC.md](./JUDGING_RUBRIC.md) holds the 100-point rubric and our
+self-assessment — **every ticket below names the rubric category it advances**, and
+the ruthless fallback plan protects the highest-scoring categories first.
 
 ## Demo flow
 
@@ -100,6 +103,22 @@ above as tickets are worked.
 
 ---
 
+## Rubric alignment (where the points come from)
+
+Full detail in [JUDGING_RUBRIC.md](./JUDGING_RUBRIC.md). Map of category → the
+tickets that earn it:
+
+| Category (pts) | Primary tickets | The thing a judge must see live |
+| --- | --- | --- |
+| **1. Value (25)** | T3, T7, T9, T10, T16 | Mission → ranked plan → outreach; narrate the contrast vs. their current alternative (guessing / staring at Maps pins). |
+| **2. Inputs & Data (15)** | **T5b**, T8, T14 | `DATA_FLOW.md` + in-app "what data is used" note; Google discovers, Gemma reasons privately; observable fallbacks. |
+| **3. Enablement (20)** | T1, T4, T6, T14, T15 | One decision per screen, bounded latency, a11y (contrast/large-text/screen-reader/reduced-motion), generate-then-edit outreach (never auto-send). |
+| **4. Underlying Model (20)** | **T5a**, T5, T6 | Real Gemma runs on-device — provable in airplane mode, on-screen path indicator (real vs. fallback) + model name/size. Highest risk; protect it. |
+| **5. Evidence & Evaluation (20)** | **T5c**, T5, T16, T17 | Explicit success criteria, eval set + metrics (latency, JSON-valid rate), honest limitations, in-app self-verification of results. |
+
+**Do not let the deterministic fallback become the demo.** It exists for resilience;
+the scored demo must run — and be shown running — on real on-device Gemma (T5a).
+
 ## Backlog (hand to a coding agent one ticket at a time)
 
 Prioritizes a polished, demoable vertical slice over production completeness.
@@ -108,10 +127,13 @@ works.
 
 - **T0 — Foundation.** ✅ Repo, routes, types, mock data, theme scaffolded. (Built
   against the earlier generic vision; migrate toward the models above.)
-- **T1 — Design system.** Tokens (warm off-white / forest green / charcoal / muted
-  gray / blue AI accent / amber scores) + `Screen`, `AppText`, `PrimaryButton`,
-  `SecondaryButton`, `Card`, `Chip`, `LocalAiBadge`, `BottomNavigation`. Large touch
-  targets, safe areas, no cramped text. Temp showcase screen.
+- **T1 — Design system.** *(Rubric 3.)* Tokens (warm off-white / forest green /
+  charcoal / muted gray / blue AI accent / amber scores) + `Screen`, `AppText`,
+  `PrimaryButton`, `SecondaryButton`, `Card`, `Chip`, `LocalAiBadge`,
+  `BottomNavigation`. Large touch targets, safe areas, no cramped text. **Bake in
+  accessibility from the start:** WCAG-AA contrast on the forest-green palette,
+  Dynamic Type / large-text support, screen-reader labels on interactive components,
+  and reduced-motion awareness. Temp showcase screen.
 - **T2 — Domain types + realistic demo data.** Utah-County taco truck + ≥6
   opportunities (office campus, brewery, apartments, sports complex, wedding venue,
   industrial park). Guaranteed fallback; coordinates cluster on one map. Keep API
@@ -121,10 +143,33 @@ works.
 - **T4 — AI Interview.** Four questions, one at a time, big answer chips, 1-of-4
   progress, always-visible business summary, in-memory answers. Mic control visual
   only; completion never blocks on speech.
-- **T5 — Gemma service abstraction.** `analyzeBusiness`, `rankOpportunities`,
-  `generateOutreach`. Configurable local endpoint/model via env; strict JSON output;
-  validate + timeout + deterministic fallback; log which path ran; unit-test parsing
-  and fallback.
+- **T5 — Gemma service abstraction.** *(Rubric 4, 5.)* `analyzeBusiness`,
+  `rankOpportunities`, `generateOutreach`. Configurable local endpoint/model via env;
+  strict JSON output; validate against a schema + timeout + deterministic fallback;
+  **record which path answered (real Gemma vs. fallback), the model name/size, and the
+  inference latency** on each result so the UI and metrics can surface it. Unit-test
+  parsing, schema validation, and fallback.
+- **T5a — Real on-device Gemma inference + locality proof.** *(Rubric 4 — highest
+  risk, do not skip.)* Wire `services/gemma.ts` to an actual on-device Gemma 4 runtime
+  (e.g. a local inference build), not just the fallback. Prove locality: (1) an
+  on-screen indicator showing the reasoning ran on-device with the model name/size;
+  (2) the full analysis → ranking → outreach flow completes in **airplane mode** with
+  real inference; (3) a visible "reasoned locally on this device" state distinct from
+  the fallback state. This is the category On-Device judges must verify — make it
+  undeniable.
+- **T5b — Data flow & provenance.** *(Rubric 2.)* Write `DATA_FLOW.md`: every input
+  (interview answers, GPS, Places candidates), where each is processed (device vs.
+  Google), and what is stored (in-memory only) or transmitted (Places/map tiles only —
+  never business strategy). Add a concise in-app "What data is used" note reachable
+  from the AI/privacy badge. Keep the exact distinction: Google *discovers* places;
+  Gemma *reasons* privately on-device.
+- **T5c — Evaluation harness & self-verification.** *(Rubric 5.)* Write
+  `EVALUATION.md` with explicit success criteria (see JUDGING_RUBRIC.md) and a small
+  eval set of business profiles → expected opportunity categories. Measure and report
+  on-device inference latency (p50/p95), Gemma JSON-valid rate, and fallback rate. In
+  the app, **verify results rather than claim them**: validate model JSON against the
+  schema, show a confidence score with the evidence behind it, flag low-confidence
+  opportunities, and confirm plan actions actually applied.
 - **T6 — Analysis "thinking" transition.** Progressive steps ("Understanding your
   business → … → Building today's plan"), invoke Gemma while it animates, 3–6s in
   demo mode, auto-advance, never hang. "Gemma is reasoning privately on this device."
@@ -139,9 +184,11 @@ works.
   "Why Expansion Scout recommends this," evidence, risks, recommended action,
   estimated value. Actions: Generate Outreach, Add to Today's Plan (updates state),
   Navigate (opens device maps or safe fallback).
-- **T10 — Outreach generator.** Email / Phone / Walk-in × Friendly / Professional /
-  Direct. Gemma when available, strong templates as fallback. Edit, copy, regenerate.
-  Label "Generated privately using Gemma." No invented facts.
+- **T10 — Outreach generator.** *(Rubric 1, 3.)* Email / Phone / Walk-in × Friendly /
+  Professional / Direct. Gemma when available, strong templates as fallback. **Safety
+  around consequential actions: generate → edit → copy only; never auto-send.** Edit,
+  copy, regenerate. Label "Generated privately using Gemma." No invented facts (only
+  attributes present in the selected opportunity).
 - **T11 — Today's Growth Plan.** Timeline of selected stops (time, place, objective,
   category, travel, potential value). Add from details (no dupes), remove, Start
   Navigation opens first stop. Local state only; preloaded demo plan.
@@ -160,24 +207,41 @@ works.
   selection animation, card entrance, analysis progression, press states, subtle
   haptics, add-to-plan confirmation, skeletons, empty states. The opportunity reveal
   is the strongest transition. Respect reduced motion; never delay the demo.
-- **T16 — Three-minute demo path + `DEMO_SCRIPT.md`.** Deterministic path Home →
-  Mission → short Interview → Analysis → Opportunities → Brewery Detail → Outreach →
-  Add to Plan → Growth Plan. Best content seeded, reveal within ~45s, reliable reset.
-  Script documents exact taps, expected content, narration, and backup behavior.
-  Narration must distinguish Google's retrieval from private on-device Gemma reasoning.
-- **T17 — Release-readiness audit.** No new features. TypeScript + lint, clean install
-  + launch, env config, permissions, no exposed secrets, no dead navigation /
-  placeholder copy / tiny text, no endless loading, no dupe plan entries, demo reset,
-  offline fallback, honest README + documented limitations. Run the full flow twice.
+- **T16 — Three-minute demo path + `DEMO_SCRIPT.md`.** *(Rubric 1, 4, 5.)*
+  Deterministic path Home → Mission → short Interview → Analysis → Opportunities →
+  Brewery Detail → Outreach → Add to Plan → Growth Plan. Best content seeded, reveal
+  within ~45s, reliable reset. Script documents exact taps, expected content,
+  narration, and backup behavior. The narration **must** hit these scored beats:
+  (a) the contrast vs. the owner's current alternative (guessing / undifferentiated
+  Maps pins); (b) Google *discovers* places, Gemma *reasons* privately on-device;
+  (c) a shown proof that Gemma runs locally (airplane mode + on-screen path
+  indicator); (d) one deliberately injected failure to show graceful recovery.
+- **T17 — Release-readiness audit.** *(Rubric 3, 5.)* No new features. TypeScript +
+  lint, clean install + launch, env config, permissions, no exposed secrets, no dead
+  navigation / placeholder copy / tiny text, no endless loading, no dupe plan entries,
+  demo reset, offline fallback, honest README + documented limitations. **Accessibility
+  pass** (contrast, large-text, screen-reader labels, reduced motion) and a
+  **verification pass** against the success criteria in JUDGING_RUBRIC.md (each one
+  demonstrably met, metrics recorded). Run the full flow twice.
 
 ### Recommended execution order
 
-`0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 9 → 10 → 11 → 14 → 16 → 17`.
+`0 → 1 → 2 → 3 → 4 → 5 → 5a → 6 → 7 → 9 → 10 → 11 → 5c → 14 → 5b → 16 → 17`.
 Only attempt **T8, T12, T13, T15** after the full vertical slice works.
+
+**T5a is on the critical path, not optional** — it is the difference between scoring
+and forfeiting the 20-point Underlying Model category on an On-Device track. Do it as
+soon as the service abstraction (T5) exists and a screen consumes it. T5b (data flow)
+and T5c (evaluation) are lightweight docs + small UI hooks; fold them in before the
+demo-script and audit tickets so their claims are already true.
 
 ### Ruthless fallback plan
 
-If time gets tight, the minimum winning product is: Home · short interview · Gemma
-analysis animation · ranked opportunity map · one excellent detail view · generated
-outreach · reliable demo mode. Profile, real Places API, voice, route optimization,
-history, notifications, and full navigation are all expendable.
+If time gets tight, the minimum winning product is: Home · short interview · **real
+on-device Gemma** analysis animation · ranked opportunity map · one excellent detail
+view · generated outreach · reliable demo mode — plus the three artifacts that carry
+otherwise-unearned points (`DATA_FLOW.md`, `EVALUATION.md`, and the local-inference
+proof). Profile, real Places API, voice, route optimization, history, notifications,
+and full navigation are all expendable. **Never cut T5a to save time** — a slick flow
+running only on the deterministic fallback loses the category the whole track is
+about; cut breadth (screens, polish) before you cut proof of local inference.

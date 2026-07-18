@@ -49,6 +49,8 @@ Then open in an iOS simulator, Android emulator, Expo Go, or a development build
   boundaries. Read this first.
 - **[IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)** — target structure, domain
   models, and the ordered ticket backlog.
+- **[JUDGING_RUBRIC.md](./JUDGING_RUBRIC.md)** — the 100-point hackathon rubric, our
+  self-assessment per category, and the success criteria the demo must prove.
 
 ## Status & honest limitations
 

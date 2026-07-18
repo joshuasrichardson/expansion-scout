@@ -20,6 +20,7 @@ export default function RootLayout() {
         <Stack.Screen name="opportunity/[id]" options={{ title: 'Opportunity' }} />
         <Stack.Screen name="outreach" options={{ title: 'Outreach' }} />
         <Stack.Screen name="plan" options={{ title: "Today's Plan" }} />
+        <Stack.Screen name="design-system" options={{ title: 'Design System' }} />
       </Stack>
     </ThemeProvider>
   );
