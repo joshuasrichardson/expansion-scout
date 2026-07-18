@@ -45,6 +45,12 @@
         {
           "enableEntitlements": true
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Expansion Scout uses your location once to center your service area on where you are. It stays on your device."
+        }
       ]
     ],
     "experiments": {
