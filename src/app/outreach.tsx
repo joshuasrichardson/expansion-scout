@@ -1,9 +1,10 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, Share, StyleSheet, TextInput, View } from 'react-native';
+import { Platform, Pressable, Share, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
+import { ReasoningPulse } from '@/components/reasoning-pulse';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
@@ -143,9 +144,10 @@ export default function OutreachScreen() {
       {generating ? (
         <Card>
           <View style={styles.generating}>
-            <ActivityIndicator color={theme.info} />
-            <ThemedText type="small" style={{ color: theme.info }}>
-              Drafting privately on your device…
+            <ReasoningPulse size={32} />
+            <ThemedText type="small" style={[styles.generatingText, { color: theme.info }]}>
+              Drafting your {channel === 'email' ? 'email' : channel === 'phone' ? 'call script' : 'opener'} to{' '}
+              {opportunity.name} — privately, on your device…
             </ThemedText>
           </View>
         </Card>
@@ -263,7 +265,8 @@ const styles = StyleSheet.create({
     minHeight: 40,
     justifyContent: 'center',
   },
-  generating: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, paddingVertical: Spacing.two },
+  generating: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three, paddingVertical: Spacing.two },
+  generatingText: { flex: 1 },
   subject: { fontSize: 16, lineHeight: 24, fontWeight: '600' },
   body: { minHeight: 200, fontSize: 16, lineHeight: 24, textAlignVertical: 'top' },
 });

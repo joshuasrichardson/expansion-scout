@@ -292,8 +292,10 @@ export function normalizePlace(
 export async function getPlaceCandidates(
   profile: BusinessProfileInput,
   analysis?: BusinessAnalysis,
+  onProgress?: (label: string) => void,
 ): Promise<PlacesResult> {
   if (!PlacesConfig.enabled) {
+    onProgress?.('Deriving targets from your own profile (no Places key — fully offline)');
     return {
       candidates: synthesizeCandidates(profile, analysis),
       source: 'derived',
@@ -313,8 +315,16 @@ export async function getPlaceCandidates(
   // instead of burning quota (and seconds) on an identical search.
   const cached = await loadPlacesCache();
   if (cached && cached.key === cacheKey && entryAgeMs(cached) < FRESH_MS && cached.candidates.length) {
+    onProgress?.(`Reusing ${cached.candidates.length} recently discovered places (cached on this device)`);
     return { candidates: cached.candidates, source: 'live', note: 'From this business’s recent discovery (cached on device).' };
   }
+
+  onProgress?.(
+    `Searching Google Maps near ${profile.city}: ${queries
+      .slice(0, 3)
+      .map((q) => `“${q.query}”`)
+      .join(' · ')}${queries.length > 3 ? ' · …' : ''}`,
+  );
 
   try {
     // One query per target, in parallel; a single failure can't sink the batch.
@@ -340,12 +350,15 @@ export async function getPlaceCandidates(
       .slice(0, PlacesConfig.maxResults);
 
     if (!candidates.length) {
+      onProgress?.('No usable results — deriving targets from your profile instead');
       return fallbackAfterFailure(profile, analysis, cached, 'Places returned no usable results');
     }
 
+    onProgress?.(`Found ${candidates.length} real places within ${profile.serviceRadiusMiles} mi`);
     void savePlacesCache(cacheKey, candidates);
     return { candidates, source: 'live' };
   } catch (err) {
+    onProgress?.('Discovery failed — falling back to targets from your profile');
     return fallbackAfterFailure(profile, analysis, cached, `Places discovery failed (${describeError(err)})`);
   }
 }

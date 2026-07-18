@@ -1,139 +1,178 @@
 /**
- * ScoutMap — a schematic, fully offline map for the growth-plan hero screen (T7).
+ * ScoutMap — the growth-plan hero map, on REAL map tiles.
  *
- * Real map tiles are the one dependency CLAUDE.md allows to fail; this component
- * removes even that risk for the demo by projecting the true lat/lng of every
- * opportunity (plus the owner's location) onto a styled canvas with range rings.
- * Relative positions and distances are real; only the imagery is stylized.
+ * Native renders react-native-maps (Apple Maps on iOS — no API key; Google Maps
+ * on Android with a key), with our own pin design on top: category icon, score
+ * on the selected pin, a "You" marker, and the service-radius ring. Selection
+ * syncs both ways with the card carousel, and the camera glides to the selected
+ * pin as the owner swipes.
  *
- * Pins distinguish category by ICON, not color alone (a11y — rubric §3), and the
- * selected pin swells + shows its score. Selection syncs both ways with the
- * card carousel via `selectedId` / `onSelect`.
+ * Resilience (CLAUDE.md: guard against map render failure): if the native map
+ * module is missing (e.g. a dev client built before react-native-maps was
+ * added) or the map throws while rendering, an error boundary drops to the
+ * fully offline SchematicMap — same props, same pins, real relative positions.
+ * Web always uses the schematic via scout-map.web.tsx.
  */
 
-import { useState } from 'react';
-import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { Component, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Pressable, StyleSheet, View } from 'react-native';
+import type MapViewType from 'react-native-maps';
+import type { Region } from 'react-native-maps';
 
+import {
+  CATEGORY_ICON,
+  CATEGORY_LABEL,
+  SchematicMap,
+  type GeoPoint,
+  type ScoutMapProps,
+} from '@/components/schematic-map';
 import { ThemedText } from '@/components/themed-text';
 import { Radius } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import type { OpportunityCategory, RankedOpportunity } from '@/services/gemma';
 
-export const CATEGORY_ICON: Record<OpportunityCategory, string> = {
-  recurring: '🔁',
-  partnership: '🤝',
-  event: '🎪',
-  direct: '📍',
-};
+export { CATEGORY_ICON, CATEGORY_LABEL };
 
-/** Owner-readable category names for cards, details, and plan stops. */
-export const CATEGORY_LABEL: Record<OpportunityCategory, string> = {
-  recurring: 'Standing account',
-  partnership: 'Partnership',
-  event: 'Event',
-  direct: 'Walk-up spot',
-};
+const METERS_PER_MILE = 1609.34;
 
-interface Point {
-  latitude: number;
-  longitude: number;
+/** The maps module, when this binary actually contains its native views. */
+type RNMapsModule = typeof import('react-native-maps');
+let RNMaps: RNMapsModule | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  RNMaps = require('react-native-maps');
+} catch {
+  RNMaps = null;
 }
 
-/** Linear geo → pixel projection over the padded bounding box of all points. */
-function projector(points: Point[], width: number, height: number) {
+export function ScoutMap(props: ScoutMapProps) {
+  if (!RNMaps) return <SchematicMap {...props} />;
+  return (
+    <MapFallbackBoundary fallback={<SchematicMap {...props} />}>
+      <TileMap {...props} maps={RNMaps} />
+    </MapFallbackBoundary>
+  );
+}
+
+/**
+ * A missing/broken native map view throws during render (not at require time —
+ * e.g. a dev client that predates react-native-maps). Catch and show the
+ * schematic instead of a crash; the demo keeps moving.
+ */
+class MapFallbackBoundary extends Component<
+  { fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+/** Fit the camera to the owner + every opportunity, with breathing room. */
+function regionFor(points: GeoPoint[]): Region {
   const lats = points.map((p) => p.latitude);
   const lngs = points.map((p) => p.longitude);
-  // Epsilon keeps a single point (or a straight line) from collapsing the box.
-  const minLat = Math.min(...lats) - 0.004;
-  const maxLat = Math.max(...lats) + 0.004;
-  const minLng = Math.min(...lngs) - 0.004;
-  const maxLng = Math.max(...lngs) + 0.004;
-  const pad = 0.12;
-  return (p: Point) => ({
-    x: (pad + ((p.longitude - minLng) / (maxLng - minLng)) * (1 - 2 * pad)) * width,
-    y: (pad + ((maxLat - p.latitude) / (maxLat - minLat)) * (1 - 2 * pad)) * height,
-  });
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLng + maxLng) / 2,
+    latitudeDelta: Math.max(0.03, (maxLat - minLat) * 1.6),
+    longitudeDelta: Math.max(0.03, (maxLng - minLng) * 1.6),
+  };
 }
 
-export function ScoutMap({
+function TileMap({
   opportunities,
   origin,
+  radiusMiles,
   selectedId,
   onSelect,
-}: {
-  opportunities: RankedOpportunity[];
-  /** The owner's own location — rendered as the "You" marker. */
-  origin: Point;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
+  maps,
+}: ScoutMapProps & { maps: RNMapsModule }) {
   const theme = useTheme();
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  const MapView = maps.default;
+  const { Marker, Circle } = maps;
+  const mapRef = useRef<MapViewType | null>(null);
 
-  const onLayout = (e: LayoutChangeEvent) => {
-    const { width, height } = e.nativeEvent.layout;
-    setSize({ width, height });
-  };
+  // Fit once per plan — the joined ids capture "a different set of places".
+  const planKey = opportunities.map((o) => o.id).join(',');
+  const initialRegion = useMemo(
+    () => regionFor([origin, ...opportunities]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [origin.latitude, origin.longitude, planKey],
+  );
 
-  const ready = size.width > 0 && size.height > 0 && opportunities.length > 0;
-  const project = ready ? projector([origin, ...opportunities], size.width, size.height) : null;
-  const originXY = project?.(origin);
+  // Card ↔ pin sync: glide the camera to the selected place (zoom unchanged).
+  useEffect(() => {
+    const selected = opportunities.find((o) => o.id === selectedId);
+    if (!selected) return;
+    mapRef.current?.animateCamera(
+      { center: { latitude: selected.latitude, longitude: selected.longitude } },
+      { duration: 350 },
+    );
+  }, [selectedId, opportunities]);
 
   return (
-    <View
-      onLayout={onLayout}
-      style={[styles.canvas, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}
-      accessibilityLabel={`Map of ${opportunities.length} nearby opportunities`}
-    >
-      {/* Range rings around the owner — stylized, not tiles, so it never fails offline. */}
-      {originXY &&
-        [0.28, 0.55, 0.85].map((r) => (
-          <View
-            key={r}
-            pointerEvents="none"
-            style={[
-              styles.ring,
-              {
-                borderColor: theme.border,
-                width: size.width * r * 2,
-                height: size.width * r * 2,
-                borderRadius: size.width * r,
-                left: originXY.x - size.width * r,
-                top: originXY.y - size.width * r,
-              },
-            ]}
+    <View style={styles.container} accessibilityLabel={`Map of ${opportunities.length} nearby opportunities`}>
+      <MapView
+        ref={mapRef}
+        style={StyleSheet.absoluteFill}
+        initialRegion={initialRegion}
+        showsPointsOfInterests={false}
+        showsCompass={false}
+        toolbarEnabled={false}
+        rotateEnabled={false}
+        pitchEnabled={false}
+      >
+        {radiusMiles ? (
+          <Circle
+            center={origin}
+            radius={radiusMiles * METERS_PER_MILE}
+            strokeColor={theme.accent}
+            strokeWidth={1}
+            fillColor="rgba(45,90,39,0.05)"
           />
-        ))}
+        ) : null}
 
-      {/* The owner. */}
-      {originXY && (
-        <View pointerEvents="none" style={[styles.origin, { left: originXY.x - 22, top: originXY.y - 13 }]}>
-          <View style={[styles.originDot, { backgroundColor: theme.accent, borderColor: theme.background }]} />
-          <ThemedText type="caption" themeColor="textMuted">
-            You
-          </ThemedText>
-        </View>
-      )}
+        <Marker coordinate={origin} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
+          <View style={styles.origin}>
+            <View style={[styles.originDot, { backgroundColor: theme.accent, borderColor: theme.background }]} />
+            <View style={[styles.originLabel, { backgroundColor: theme.background }]}>
+              <ThemedText type="caption" themeColor="textSecondary">
+                You
+              </ThemedText>
+            </View>
+          </View>
+        </Marker>
 
-      {/* Opportunity pins — selected last so it stacks on top. */}
-      {project &&
-        [...opportunities]
-          .sort((a, b) => (a.id === selectedId ? 1 : b.id === selectedId ? -1 : 0))
-          .map((o) => {
-            const { x, y } = project(o);
-            const selected = o.id === selectedId;
-            return (
+        {opportunities.map((o) => {
+          const selected = o.id === selectedId;
+          return (
+            <Marker
+              // Selection changes the pin's size/content — re-keying forces the
+              // marker view to refresh reliably on both map providers.
+              key={`${o.id}-${selected ? 'sel' : 'idle'}`}
+              coordinate={{ latitude: o.latitude, longitude: o.longitude }}
+              anchor={{ x: 0.5, y: 0.5 }}
+              zIndex={selected ? 2 : 1}
+              tracksViewChanges={false}
+              onPress={() => onSelect(o.id)}
+              accessibilityLabel={`${o.name}, ${CATEGORY_LABEL[o.category]}, score ${o.score}`}
+            >
               <Pressable
-                key={o.id}
                 accessibilityRole="button"
-                accessibilityLabel={`${o.name}, ${o.category}, score ${o.score}`}
                 accessibilityState={{ selected }}
-                onPress={() => onSelect(o.id)}
                 style={[
                   styles.pin,
                   {
-                    left: x - (selected ? 26 : 18),
-                    top: y - (selected ? 26 : 18),
                     width: selected ? 52 : 36,
                     height: selected ? 52 : 36,
                     borderRadius: selected ? 26 : 18,
@@ -151,23 +190,24 @@ export function ScoutMap({
                   </ThemedText>
                 )}
               </Pressable>
-            );
-          })}
+            </Marker>
+          );
+        })}
+      </MapView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  canvas: {
-    flex: 1,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    overflow: 'hidden',
-  },
-  ring: { position: 'absolute', borderWidth: StyleSheet.hairlineWidth },
-  origin: { position: 'absolute', alignItems: 'center', width: 44, gap: 2 },
+  container: { flex: 1, overflow: 'hidden' },
+  origin: { alignItems: 'center', gap: 2 },
   originDot: { width: 14, height: 14, borderRadius: Radius.pill, borderWidth: 3 },
+  originLabel: {
+    paddingHorizontal: 4,
+    borderRadius: Radius.sm,
+    opacity: 0.9,
+  },
   pin: {
-    position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,

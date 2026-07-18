@@ -50,8 +50,10 @@ Signature moments to nail:
 - **Daily Mission** is the signature screen — a coach handing you one goal for the
   day (e.g. *"Book one recurring catering customer — 94% confidence, +$850/mo"*),
   not a search box.
-- **Analysis "thinking" screen** — animated checklist ("Understanding your business
-  → Ranking opportunities…") with *"Gemma 4 is reasoning privately on your device."*
+- **Analysis "thinking" screen** — a live reasoning ticker streamed from the model's
+  actual token stream (business-specific stages, segment names appearing as Gemma
+  emits them, model name + wall clock + token count) with *"Gemma 4 is reasoning
+  privately on your device."* Never a timer-faked checklist.
 - **The reveal** — ranked opportunities slide up, map pins animate in. This is the
   strongest transition; it must land within ~45s of the demo start.
 
@@ -67,8 +69,6 @@ Note the naming: we call the opportunities screen **"Today's Growth Plan,"** not
 - **Feel:** premium startup — Apple HIG, Linear, Arc, Material 3, Notion AI. Large
   rounded cards, generous spacing, subtle motion, App-Store-quality polish. No
   clutter; every screen has breathing room. Avoid the cramped text of the Stitch mocks.
-- **Org brand:** when producing UI/theme/visual assets, consult the
-  **halda-brand-guidelines** skill (org policy) before finalizing colors/type/tone.
 
 ### Privacy framing (say it exactly like this)
 

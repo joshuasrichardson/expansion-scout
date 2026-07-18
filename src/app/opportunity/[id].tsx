@@ -201,10 +201,6 @@ function Row({ icon, color, text }: { icon: string; color: string; text: string 
   );
 }
 
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 function confidenceLabel(confidence: number): string {
   return confidence >= 75 ? 'High' : confidence >= 55 ? 'Moderate' : 'Low';
 }

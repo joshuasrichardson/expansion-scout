@@ -1,7 +1,6 @@
 import { Redirect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   StyleSheet,
   useWindowDimensions,
@@ -12,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
+import { ReasoningPulse } from '@/components/reasoning-pulse';
 import { CATEGORY_ICON, CATEGORY_LABEL, ScoutMap } from '@/components/scout-map';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -33,7 +33,8 @@ export default function OpportunitiesScreen() {
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const { business, hydrated, interviewProfile } = useBusiness();
-  const { status, ranked, rankMeta, placesSource, selectedId, select, load } = useOpportunities();
+  const { status, loadingDetail, ranked, rankMeta, placesSource, selectedId, select, load } =
+    useOpportunities();
 
   const listRef = useRef<FlatList<RankedOpportunity>>(null);
   const cardWidth = Math.min(width, 800) - Spacing.four * 2;
@@ -78,9 +79,16 @@ export default function OpportunitiesScreen() {
   if (status !== 'ready' || ranked.length === 0) {
     return (
       <ThemedView style={styles.loadingRoot}>
-        <ActivityIndicator color={theme.info} />
-        <ThemedText type="small" themeColor="textSecondary">
-          Assembling today&apos;s growth plan…
+        <ReasoningPulse size={48} />
+        <ThemedText type="subtitle" style={{ color: theme.info }}>
+          Assembling today&apos;s growth plan
+        </ThemedText>
+        {/* Live pipeline stage — real reports from discovery/ranking, not canned copy. */}
+        <ThemedText type="small" themeColor="textSecondary" style={styles.loadingDetail}>
+          {loadingDetail ?? 'Lining up discovery and on-device reasoning…'}
+        </ThemedText>
+        <ThemedText type="caption" themeColor="textMuted">
+          Google discovers places · Gemma reasons privately on your device
         </ThemedText>
       </ThemedView>
     );
@@ -94,6 +102,7 @@ export default function OpportunitiesScreen() {
         <ScoutMap
           opportunities={ranked}
           origin={origin}
+          radiusMiles={business!.profile.serviceRadiusMiles}
           selectedId={selectedId}
           onSelect={onPinPress}
         />
@@ -184,13 +193,16 @@ function OpportunityCard({
   );
 }
 
-function capitalize(s: string): string {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  loadingRoot: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.three },
+  loadingRoot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.three,
+    paddingHorizontal: Spacing.five,
+  },
+  loadingDetail: { textAlign: 'center' },
   map: { flex: 1.2 },
   provenance: {
     position: 'absolute',

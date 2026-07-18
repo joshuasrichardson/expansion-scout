@@ -28,6 +28,12 @@ import { getPlaceCandidates, type PlacesResult } from '@/services/places';
 
 interface OpportunitiesState {
   status: 'idle' | 'loading' | 'ready' | 'error';
+  /**
+   * What the pipeline is doing RIGHT NOW, while `status === 'loading'` — real
+   * stage reports from the services (search queries issued, places found,
+   * candidates scored), never canned copy. The loading screen renders this live.
+   */
+  loadingDetail: string | null;
   ranked: RankedOpportunity[];
   /** Where the candidate places came from (Google vs bundled demo). */
   placesSource: PlacesResult['source'] | null;
@@ -48,6 +54,7 @@ const OpportunitiesContext = createContext<OpportunitiesState | null>(null);
 
 export function OpportunitiesProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<OpportunitiesState['status']>('idle');
+  const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [ranked, setRanked] = useState<RankedOpportunity[]>([]);
   const [placesSource, setPlacesSource] = useState<PlacesResult['source'] | null>(null);
   const [rankMeta, setRankMeta] = useState<InferenceMeta | null>(null);
@@ -55,21 +62,32 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
 
   const load = useCallback(async (profile: BusinessProfileInput, analysis?: BusinessAnalysis) => {
     setStatus('loading');
+    // Every service reports its real stage; the loading UI mirrors it live.
+    const report = (label: string) => setLoadingDetail(label);
     try {
       // 1. Gemma reads the business (unless the caller already did) — its target
       //    segments sharpen what discovery searches for.
-      const businessAnalysis = analysis ?? (await analyzeBusiness(profile)).data;
+      const businessAnalysis =
+        analysis ??
+        (
+          await analyzeBusiness(profile, (e) => {
+            if (e.type !== 'tokens') report(e.label);
+          })
+        ).data;
 
       // 2. Google discovers candidate places (falls back to profile-derived
       //    targets on its own).
-      const { candidates, source } = await getPlaceCandidates(profile, businessAnalysis);
+      const { candidates, source } = await getPlaceCandidates(profile, businessAnalysis, report);
       setPlacesSource(source);
 
       // 3. Gemma privately ranks the discovered places.
-      const { data, meta } = await rankOpportunities(profile, businessAnalysis, candidates);
+      const { data, meta } = await rankOpportunities(profile, businessAnalysis, candidates, (e) => {
+        if (e.type !== 'tokens') report(e.label);
+      });
       setRanked(data);
       setRankMeta(meta);
       setSelectedId(data[0]?.id ?? null);
+      setLoadingDetail(null);
       setStatus('ready');
     } catch {
       // Last-resort safety net: deterministic ranking over profile-derived
@@ -85,6 +103,7 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
       setPlacesSource('derived');
       setRankMeta(null);
       setSelectedId(fallback[0]?.id ?? null);
+      setLoadingDetail(null);
       setStatus('ready');
     }
   }, []);
@@ -93,6 +112,7 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
 
   const reset = useCallback(() => {
     setStatus('idle');
+    setLoadingDetail(null);
     setRanked([]);
     setPlacesSource(null);
     setRankMeta(null);
@@ -100,8 +120,8 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
   }, []);
 
   const value = useMemo(
-    () => ({ status, ranked, placesSource, rankMeta, selectedId, load, select, reset }),
-    [status, ranked, placesSource, rankMeta, selectedId, load, select, reset],
+    () => ({ status, loadingDetail, ranked, placesSource, rankMeta, selectedId, load, select, reset }),
+    [status, loadingDetail, ranked, placesSource, rankMeta, selectedId, load, select, reset],
   );
 
   return <OpportunitiesContext.Provider value={value}>{children}</OpportunitiesContext.Provider>;

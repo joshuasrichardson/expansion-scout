@@ -1,9 +1,10 @@
 import { Redirect, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
+import { ReasoningPulse } from '@/components/reasoning-pulse';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
@@ -14,6 +15,7 @@ import {
   MIN_QUESTIONS,
   summarizeInterview,
   type InterviewTurn,
+  type ReasoningEvent,
 } from '@/services/gemma';
 import { useBusiness } from '@/state/business-context';
 
@@ -44,6 +46,13 @@ export default function InterviewScreen() {
   const [current, setCurrent] = useState<Prompt>({ ...SEED_QUESTION });
   const [draft, setDraft] = useState('');
   const [phase, setPhase] = useState<Phase>('asking');
+  // What Gemma is doing RIGHT NOW — live stage reports from the service.
+  const [thinkingLabel, setThinkingLabel] = useState<string | null>(null);
+
+  /** Mirror live reasoning stages into the thinking headline. */
+  function onReasoning(event: ReasoningEvent) {
+    if (event.type === 'step' || event.type === 'update') setThinkingLabel(event.label);
+  }
 
   // The interview refines the owner's stored business — it needs one to exist.
   if (hydrated && !business) return <Redirect href="/profile" />;
@@ -51,8 +60,9 @@ export default function InterviewScreen() {
   /** Wrap up: distill the transcript into the profile and move to analysis. */
   async function finish(finalHistory: InterviewTurn[]) {
     if (!business) return;
+    setThinkingLabel(null);
     setPhase('finishing');
-    const { data: profile } = await summarizeInterview(finalHistory, business.profile);
+    const { data: profile } = await summarizeInterview(finalHistory, business.profile, onReasoning);
     completeInterview(profile);
     router.push('/analysis');
   }
@@ -64,10 +74,11 @@ export default function InterviewScreen() {
     const nextHistory = [...history, { question: current.question, answer }];
     setHistory(nextHistory);
     setDraft('');
+    setThinkingLabel(null);
     setPhase('thinking');
 
     // Gemma reasons about whether it has enough to search — else asks one more.
-    const { data: decision } = await interviewStep(nextHistory);
+    const { data: decision } = await interviewStep(nextHistory, onReasoning);
 
     const atMax = nextHistory.length >= MAX_QUESTIONS;
     const belowMin = nextHistory.length < MIN_QUESTIONS;
@@ -88,16 +99,26 @@ export default function InterviewScreen() {
   }
 
   if (phase !== 'asking') {
-    const heading = phase === 'finishing' ? 'Assembling your growth plan…' : 'Understanding your business…';
+    const heading =
+      thinkingLabel ??
+      (phase === 'finishing'
+        ? `Distilling your ${history.length} answers`
+        : 'Weighing what you just said');
     return (
       <Screen>
         <View style={[styles.thinking, { backgroundColor: theme.infoSubtle }]}>
-          <ActivityIndicator color={theme.info} />
-          <ThemedText type="subtitle" style={{ color: theme.info }}>
-            {heading}
+          <ReasoningPulse size={44} />
+          <ThemedText
+            type="subtitle"
+            style={[styles.thinkingCopy, { color: theme.info }]}
+            accessibilityLiveRegion="polite"
+          >
+            {heading}…
           </ThemedText>
           <ThemedText type="small" themeColor="textSecondary" style={styles.thinkingCopy}>
-            Gemma 4 is reasoning privately on your device.
+            {phase === 'finishing'
+              ? 'Gemma 4 is turning your answers into a customer picture — privately, on your device.'
+              : 'Gemma 4 is deciding whether it knows enough to search — or what to ask next.'}
           </ThemedText>
         </View>
       </Screen>

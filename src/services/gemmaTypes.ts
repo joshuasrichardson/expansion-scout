@@ -238,3 +238,24 @@ export interface InferenceMeta {
 }
 
 export type WithMeta<T> = { data: T; meta: InferenceMeta };
+
+/**
+ * Live progress events emitted while a reasoning call runs. Every event marks
+ * something that ACTUALLY happened — a pipeline stage starting, a JSON field
+ * appearing in the model's token stream, a segment name streaming in — never a
+ * timer-driven animation pretending to be work. The thinking screens render
+ * these as they arrive, which is what makes "watch Gemma reason live" honest.
+ */
+export type ReasoningEvent =
+  /** A new stage began; any previous stage is implicitly complete. */
+  | { type: 'step'; label: string }
+  /** The current stage's label changed in place (e.g. a live counter). */
+  | { type: 'update'; label: string }
+  /** A discovery inside the current stage (e.g. a target segment Gemma just named). */
+  | { type: 'note'; label: string }
+  /** Cumulative model tokens streamed so far in this call. */
+  | { type: 'tokens'; count: number }
+  /** The call finished; `source` says who actually answered. */
+  | { type: 'done'; source: InferenceMeta['source']; latencyMs: number; label: string };
+
+export type ReasoningProgress = (event: ReasoningEvent) => void;

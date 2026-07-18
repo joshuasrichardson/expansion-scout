@@ -6,7 +6,11 @@ Practice once with your chosen business so the interview answers are ready to ty
 
 **Setup (before you present):** device with the Gemma GGUF downloaded (Privacy →
 *Your data* → model card shows "downloaded"); optionally `EXPO_PUBLIC_GOOGLE_PLACES_KEY`
-set for live discovery. To reset between runs: Profile → **Forget this business**.
+set for live discovery. The dev client must be built **after** react-native-maps was
+added (`npx expo prebuild --clean && npx expo run:ios --device`) or the growth plan
+falls back to the schematic map. Open the Growth Plan once on Wi-Fi so Apple Maps
+tiles are cached before any airplane-mode beat. To reset between runs: Profile →
+**Forget this business**.
 
 ## The path (≈3:00, reveal lands ~0:45)
 
@@ -15,7 +19,7 @@ set for live discovery. To reset between runs: Profile → **Forget this busines
 | 0:00 | Home | Point at the **On-device AI** badge | "Every owner knows the feeling: *I don't know where to find more business.* Their current tools are guessing, or staring at undifferentiated map pins." |
 | 0:10 | Profile (first run) | Enter your business: name, type, city, radius, one goal, one capability → Save | "Thirty seconds of setup. This profile is cached on the phone and never uploaded — the consultant lives *in* the device." |
 | 0:35 | Daily Mission | Read the mission line | "Scout doesn't hand me a search box. It hands me one goal for today." |
-| 0:45 | Interview → Analysis | Answer 3 short questions; let the thinking screen play | "Gemma 4 is reasoning **privately on this device** — watch the steps. No prompt leaves the phone." |
+| 0:45 | Interview → Analysis | Answer 3 short questions; let the thinking screen play | "This isn't a loading animation — those steps are **streaming out of Gemma's token stream live**, on this device. There's the model name, the clock, the token count — and watch it name each customer segment the moment it decides on one." |
 | 1:15 | Analysis reveal | Segment cards slide in | "It decided *who* to look for — and for each kind of customer, how to find them and how to reach them." |
 | 1:30 | Today's Growth Plan | Swipe cards; tap a pin | "Google discovers the places. Gemma ranks them — for *my* business. Pin and card stay in sync; the badge in the corner shows exactly which engine answered." |
 | 1:50 | Opportunity details | Scroll: reasons → **Backed by** → confidence bar → risks | "This is the transparency story: every recommendation shows its argument, the evidence it rests on — only facts from the data, never invented — and how confident it is." |

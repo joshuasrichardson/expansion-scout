@@ -51,6 +51,7 @@ import {
   type OutreachTone,
   type PlaceCandidate,
   type RankedOpportunity,
+  type ReasoningProgress,
   type WithMeta,
 } from './gemmaTypes';
 
@@ -81,9 +82,22 @@ export const GemmaConfig = {
 /* Transport                                                                  */
 /* -------------------------------------------------------------------------- */
 
+export interface GenerateOpts {
+  maxTokens?: number;
+  temperature?: number;
+  /**
+   * Streams the model's output as it is generated: the full text so far plus how
+   * many token pieces have arrived. This is what lets the thinking screens show
+   * reasoning stages the moment the model reaches them, instead of a canned
+   * animation. Optional — transports may deliver everything in one final call
+   * if the environment can't stream.
+   */
+  onToken?: (textSoFar: string, tokenCount: number) => void;
+}
+
 export interface GemmaTransport {
   /** Returns raw model text (expected to be JSON) plus how long it took. */
-  generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }): Promise<{
+  generate(prompt: string, opts?: GenerateOpts): Promise<{
     text: string;
     latencyMs: number;
   }>;
@@ -99,7 +113,8 @@ export class OllamaTransport implements GemmaTransport {
     private readonly timeoutMs = GemmaConfig.timeoutMs,
   ) {}
 
-  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+  async generate(prompt: string, opts?: GenerateOpts) {
+    if (opts?.onToken) return this.generateStreaming(prompt, opts);
     const started = nowMs();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -108,16 +123,7 @@ export class OllamaTransport implements GemmaTransport {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
-        body: JSON.stringify({
-          model: this.model,
-          prompt,
-          stream: false,
-          format: 'json', // constrain output to a JSON object
-          options: {
-            temperature: opts?.temperature ?? 0.4,
-            num_predict: opts?.maxTokens ?? 512,
-          },
-        }),
+        body: JSON.stringify(this.requestBody(prompt, opts, false)),
       });
       if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
       const json = (await res.json()) as { response?: string };
@@ -125,6 +131,86 @@ export class OllamaTransport implements GemmaTransport {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Streaming path: Ollama's NDJSON stream (`"stream": true` — one JSON line per
+   * token) read progressively via XMLHttpRequest, since React Native's fetch
+   * can't stream response bodies. If the environment delivers the body only at
+   * the end, the same code still resolves correctly — the "stream" just arrives
+   * as one late chunk, and the caller's stage events collapse gracefully.
+   */
+  private generateStreaming(prompt: string, opts: GenerateOpts): Promise<{ text: string; latencyMs: number }> {
+    const started = nowMs();
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const timer = setTimeout(() => {
+        xhr.abort();
+        reject(new Error(`Timed out after ${this.timeoutMs}ms.`));
+      }, this.timeoutMs);
+
+      let consumed = 0; // chars of responseText already parsed
+      let carry = ''; // trailing partial NDJSON line
+      let text = '';
+      let pieces = 0;
+
+      const takeLine = (line: string) => {
+        if (!line.trim()) return;
+        try {
+          const j = JSON.parse(line) as { response?: string };
+          if (typeof j.response === 'string' && j.response) {
+            text += j.response;
+            pieces += 1;
+          }
+        } catch {
+          // Partial or malformed line — ignore; the final text is re-validated anyway.
+        }
+      };
+
+      const drain = () => {
+        const full = xhr.responseText ?? '';
+        if (full.length <= consumed) return;
+        carry += full.slice(consumed);
+        consumed = full.length;
+        const lines = carry.split('\n');
+        carry = lines.pop() ?? '';
+        const before = pieces;
+        for (const line of lines) takeLine(line);
+        if (pieces > before) opts.onToken?.(text, pieces);
+      };
+
+      xhr.open('POST', `${this.baseUrl}/api/generate`);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onprogress = drain;
+      xhr.onload = () => {
+        drain();
+        takeLine(carry);
+        clearTimeout(timer);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ text, latencyMs: Math.round(nowMs() - started) });
+        } else {
+          reject(new Error(`Ollama HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error('Ollama request failed'));
+      };
+      xhr.send(JSON.stringify(this.requestBody(prompt, opts, true)));
+    });
+  }
+
+  private requestBody(prompt: string, opts: GenerateOpts | undefined, stream: boolean) {
+    return {
+      model: this.model,
+      prompt,
+      stream,
+      format: 'json', // constrain output to a JSON object
+      options: {
+        temperature: opts?.temperature ?? 0.4,
+        num_predict: opts?.maxTokens ?? 512,
+      },
+    };
   }
 
   async probe() {
@@ -170,7 +256,7 @@ class AutoTransport implements GemmaTransport {
     return null;
   }
 
-  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+  async generate(prompt: string, opts?: GenerateOpts) {
     const t = await this.pick();
     if (!t) throw new Error('No on-device transport available');
     try {
@@ -261,12 +347,80 @@ export async function warmUpGemma(): Promise<boolean> {
 
 export async function analyzeBusiness(
   profile: BusinessProfileInput | InterviewProfile,
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<BusinessAnalysis>> {
+  onProgress?.({ type: 'step', label: `Reading ${profile.name} — ${profile.type} in ${profile.city}` });
   return run(
     ANALYZE_PROMPT(profile),
     (raw) => validateAnalysis(raw),
     () => analyzeBusinessLocal(profile),
-    { maxTokens: 600 },
+    {
+      maxTokens: 600,
+      progress: onProgress,
+      requestLabel: `Briefing Gemma 4 on your goals: ${firstGoal(profile)}`,
+      onToken: onProgress ? analysisStreamWatcher(profile, onProgress) : undefined,
+    },
+  );
+}
+
+/** The owner's lead goal, shortened for a progress line. */
+function firstGoal(p: BusinessProfileInput): string {
+  const goal = p.goals[0]?.trim().replace(/\.$/, '');
+  if (!goal) return 'grow revenue';
+  return goal.length > 42 ? `${goal.slice(0, 39)}…` : goal.toLowerCase();
+}
+
+/**
+ * Turns a raw token stream into live reasoning steps: each stage fires when its
+ * JSON field ACTUALLY appears in the stream — i.e. when the model genuinely
+ * reached that part of its answer. Optionally extracts values matching
+ * `noteField` (e.g. segment labels) and announces each as a note the moment the
+ * model names it. Nothing here is on a timer.
+ */
+function keyStageWatcher(
+  stages: { key: string; label: string }[],
+  progress: ReasoningProgress,
+  noteField?: { afterKey: string; field: string },
+): (textSoFar: string, tokenCount: number) => void {
+  const fired = new Set<string>();
+  const noted = new Set<string>();
+  const noteRe = noteField ? new RegExp(`"${noteField.field}"\\s*:\\s*"([^"]{3,60})"`, 'g') : null;
+
+  return (text, tokenCount) => {
+    for (const stage of stages) {
+      if (!fired.has(stage.key) && text.includes(`"${stage.key}"`)) {
+        fired.add(stage.key);
+        progress({ type: 'step', label: stage.label });
+      }
+    }
+    if (noteField && noteRe && fired.has(noteField.afterKey)) {
+      for (const m of text.matchAll(noteRe)) {
+        if (!noted.has(m[1])) {
+          noted.add(m[1]);
+          progress({ type: 'note', label: m[1] });
+        }
+      }
+    }
+    progress({ type: 'tokens', count: tokenCount });
+  };
+}
+
+/** The analysis call's stages, phrased for THIS business. */
+function analysisStreamWatcher(
+  profile: BusinessProfileInput | InterviewProfile,
+  progress: ReasoningProgress,
+): (textSoFar: string, tokenCount: number) => void {
+  return keyStageWatcher(
+    [
+      { key: 'summary', label: `Sizing up ${profile.name} as a ${profile.type}` },
+      { key: 'strengths', label: `Weighing what ${profile.name} does best` },
+      { key: 'focus', label: 'Choosing today’s single mission' },
+      { key: 'recommendedCategories', label: 'Picking the revenue shapes worth chasing' },
+      { key: 'targetSegments', label: 'Deciding exactly who to look for' },
+    ],
+    progress,
+    // Segment labels only exist inside targetSegments — announce each new one.
+    { afterKey: 'targetSegments', field: 'label' },
   );
 }
 
@@ -279,12 +433,28 @@ export async function analyzeBusiness(
  */
 export async function interviewStep(
   history: InterviewTurn[],
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<InterviewDecision>> {
+  const n = history.length;
   return run(
     INTERVIEW_STEP_PROMPT(history),
     (raw) => validateDecision(raw),
     () => interviewStepLocal(history),
-    { maxTokens: 200, temperature: 0.4 },
+    {
+      maxTokens: 200,
+      temperature: 0.4,
+      progress: onProgress,
+      requestLabel: `Rereading your ${n} answer${n === 1 ? '' : 's'} for the biggest gap`,
+      onToken: onProgress
+        ? keyStageWatcher(
+            [
+              { key: 'done', label: 'Judging whether it can already picture your customer' },
+              { key: 'question', label: 'Writing the one question that fills the gap' },
+            ],
+            onProgress,
+          )
+        : undefined,
+    },
   );
 }
 
@@ -297,12 +467,31 @@ export async function interviewStep(
 export async function summarizeInterview(
   history: InterviewTurn[],
   base: BusinessProfileInput,
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<InterviewProfile>> {
   return run(
     INTERVIEW_SUMMARY_PROMPT(history, base),
     (raw) => validateProfile(raw, base),
     () => summarizeInterviewLocal(history, base),
-    { maxTokens: 500, temperature: 0.3 },
+    {
+      maxTokens: 500,
+      temperature: 0.3,
+      progress: onProgress,
+      requestLabel: `Distilling your ${history.length} answers on-device`,
+      onToken: onProgress
+        ? keyStageWatcher(
+            [
+              { key: 'description', label: `Restating what ${base.name} wants to grow` },
+              { key: 'goals', label: 'Pinning down your goals' },
+              { key: 'capabilities', label: `Noting what ${base.name} is great at` },
+              { key: 'customer', label: 'Sketching your ideal customer' },
+              { key: 'locations', label: 'Listing where those customers gather' },
+              { key: 'outreach', label: 'Choosing how you’d reach them' },
+            ],
+            onProgress,
+          )
+        : undefined,
+    },
   );
 }
 
@@ -317,23 +506,30 @@ export async function rankOpportunities(
   profile: BusinessProfileInput,
   analysis: BusinessAnalysis,
   candidates: PlaceCandidate[],
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<RankedOpportunity[]>> {
   const baseline = rankOpportunitiesLocal(profile, analysis, candidates);
   const model = GemmaConfig.model;
+  const total = candidates.length;
 
   if (!GemmaConfig.enabled) {
+    onProgress?.({ type: 'done', source: 'fallback', latencyMs: 0, label: `Ranked ${total} places deterministically on-device` });
     return { data: baseline, meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
   }
 
   let latencyMs = 0;
   try {
+    onProgress?.({ type: 'step', label: `Gemma is scoring ${total} nearby places against your goals` });
     const { text, latencyMs: ms } = await transport.generate(RANK_PROMPT(profile, analysis, candidates), {
       maxTokens: 1600, // room for reasons + evidence + confidence per candidate
       temperature: 0.3, // lower temp ⇒ more reliable JSON from the small model
+      onToken: onProgress ? rankStreamWatcher(total, onProgress) : undefined,
     });
     latencyMs = ms;
+    onProgress?.({ type: 'step', label: 'Grounding every score in real place data' });
     const ranked = validateRanked(parseJson(text), candidates); // grounded subset, may be []
     if (!ranked.length) {
+      onProgress?.({ type: 'done', source: 'fallback', latencyMs, label: 'No usable model ranking — ordered deterministically on-device' });
       return { data: baseline, meta: meta('fallback', model, latencyMs, false, 'Model returned no usable ranking.') };
     }
     const merged = mergeRankings(baseline, ranked);
@@ -341,10 +537,25 @@ export async function rankOpportunities(
       ranked.length < candidates.length
         ? `Gemma ranked ${ranked.length}/${candidates.length}; remainder ordered on-device.`
         : undefined;
+    onProgress?.({ type: 'done', source: 'gemma', latencyMs, label: `Ranked ${total} places in ${(latencyMs / 1000).toFixed(1)}s` });
     return { data: merged, meta: meta('gemma', model, latencyMs, true, note) };
   } catch (err) {
+    onProgress?.({ type: 'done', source: 'fallback', latencyMs, label: 'Gemma unavailable — ordered deterministically on-device' });
     return { data: baseline, meta: meta('fallback', model, latencyMs, false, describeError(err)) };
   }
+}
+
+/** Live "scored i of N" counter — each candidate's `"id"` appearing in the stream is one place reasoned about. */
+function rankStreamWatcher(total: number, progress: ReasoningProgress): (textSoFar: string, tokenCount: number) => void {
+  let lastCount = 0;
+  return (text, tokenCount) => {
+    const count = Math.min(total, (text.match(/"id"\s*:/g) ?? []).length);
+    if (count > lastCount) {
+      lastCount = count;
+      progress({ type: 'update', label: `Gemma is scoring nearby places — ${count} of ${total} reasoned` });
+    }
+    progress({ type: 'tokens', count: tokenCount });
+  };
 }
 
 /** Prefer Gemma's entry per id, backfill with the deterministic one, re-sort. */
@@ -371,28 +582,58 @@ export async function generateOutreach(
 /* Orchestration: try Gemma → validate → else deterministic fallback          */
 /* -------------------------------------------------------------------------- */
 
+interface RunOpts extends GenerateOpts {
+  /** Live progress sink; stage events below only fire when this is set. */
+  progress?: ReasoningProgress;
+  /** Label for the "prompt sent, waiting for the model" stage. */
+  requestLabel?: string;
+}
+
 async function run<T>(
   prompt: string,
   validate: (raw: unknown) => T,
   fallback: () => T,
-  opts?: { maxTokens?: number; temperature?: number },
+  opts?: RunOpts,
 ): Promise<WithMeta<T>> {
   const model = GemmaConfig.model;
+  const progress = opts?.progress;
 
   if (!GemmaConfig.enabled) {
-    return { data: fallback(), meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
+    progress?.({ type: 'step', label: 'Gemma disabled — using the deterministic on-device planner' });
+    const data = fallback();
+    progress?.({ type: 'done', source: 'fallback', latencyMs: 0, label: 'Planned deterministically on-device' });
+    return { data, meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
   }
 
   let latencyMs = 0;
   try {
+    progress?.({ type: 'step', label: opts?.requestLabel ?? 'Sending the brief to Gemma 4 on this device' });
     const { text, latencyMs: ms } = await transport.generate(prompt, opts);
     latencyMs = ms;
+    progress?.({ type: 'step', label: 'Checking the answer against the strict schema' });
     const parsed = parseJson(text);
     const data = validate(parsed); // throws on malformed / off-contract output
+    progress?.({
+      type: 'done',
+      source: 'gemma',
+      latencyMs,
+      label: `Reasoned on-device in ${(latencyMs / 1000).toFixed(1)}s`,
+    });
     return { data, meta: meta('gemma', model, latencyMs, true) };
   } catch (err) {
+    progress?.({
+      type: 'step',
+      label: `Gemma unavailable (${describeError(err).replace(/\.$/, '').toLowerCase()}) — switching to the deterministic on-device planner`,
+    });
+    const data = fallback();
+    progress?.({
+      type: 'done',
+      source: 'fallback',
+      latencyMs,
+      label: 'Planned deterministically on-device — no data left this device',
+    });
     return {
-      data: fallback(),
+      data,
       meta: meta('fallback', model, latencyMs, false, describeError(err)),
     };
   }
@@ -482,6 +723,28 @@ const SEGMENT_DEFAULT_REACH: Record<CustomerSegmentType, OutreachChannel> = {
   'partner-org': 'walk-in',
 };
 
+/**
+ * Default category per segment type — observed failure: with interview context
+ * in the prompt, E2B reliably emits label/type/discovery but OMITS `category`.
+ * Requiring it dropped every real segment (templates silently backfilled), so
+ * the archetype now implies the revenue shape instead.
+ */
+const SEGMENT_DEFAULT_CATEGORY: Record<CustomerSegmentType, OpportunityCategory> = {
+  'physical-business': 'recurring', // offices/fleets ⇒ standing accounts
+  'residential-community': 'recurring',
+  'event-venue': 'event',
+  'public-gathering': 'event',
+  'partner-org': 'partnership',
+};
+
+/** Inverse fallback: a usable category but a garbled type. */
+const CATEGORY_DEFAULT_TYPE: Record<OpportunityCategory, CustomerSegmentType> = {
+  recurring: 'physical-business',
+  partnership: 'partner-org',
+  event: 'public-gathering',
+  direct: 'physical-business',
+};
+
 function clampScore(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(v);
   if (!Number.isFinite(n)) return 60;
@@ -513,14 +776,22 @@ function asString(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
 }
 
-/** Parse one model segment, dropping it unless the closed-set fields survive. */
+/**
+ * Parse one model segment. A missing/garbled type or category is backfilled
+ * from the other (each implies a sensible default of its counterpart); the
+ * segment is dropped only when it has no label or NEITHER closed-set field
+ * survives coercion — keeping Gemma's real reasoning on screen instead of
+ * silently swapping in templates.
+ */
 function parseSegment(raw: unknown): CustomerSegment | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
-  const type = coerceSegmentType(o.type);
-  const category = coerceCategory(o.category);
+  const coercedType = coerceSegmentType(o.type);
+  const coercedCategory = coerceCategory(o.category);
   const label = asString(o.label);
-  if (!type || !category || !label) return null;
+  if (!label || (!coercedType && !coercedCategory)) return null;
+  const type = coercedType ?? CATEGORY_DEFAULT_TYPE[coercedCategory!];
+  const category = coercedCategory ?? SEGMENT_DEFAULT_CATEGORY[type];
   return {
     label,
     type,
