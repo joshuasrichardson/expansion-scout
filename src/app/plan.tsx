@@ -112,6 +112,7 @@ function StopCard({
           </ThemedText>
           <ThemedText type="caption" themeColor="textMuted">
             🚗 {stop.travelMinutes} min{stop.estimatedValue ? ` · ${stop.estimatedValue}` : ''}
+            {stop.phone ? ` · 📞 ${stop.phone}` : ''}
           </ThemedText>
         </View>
 

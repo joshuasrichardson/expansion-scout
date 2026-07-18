@@ -60,6 +60,12 @@ export interface PlaceCandidate {
   distanceMiles: number;
   /** Optional grounding context, e.g. "office park · ~400 employees". */
   context?: string;
+  /** Public reputation signals from discovery — real evidence for the ranking. */
+  rating?: number;
+  reviewCount?: number;
+  /** Contactability — lets "recommended action" become a one-tap call. */
+  phone?: string;
+  website?: string;
 }
 
 /**
@@ -146,6 +152,11 @@ export interface CustomerSegment {
   whoTheyAre: string;
   /** How to FIND them (Maps / event calendars / social) — discoverability. */
   discovery: string;
+  /**
+   * The literal 2–5 word phrase to type into Google Maps to find this segment
+   * nearby (e.g. "property management offices"). Drives live discovery.
+   */
+  mapsQuery?: string;
   /** How to REACH them — contactability. */
   reach: OutreachChannel;
   /** Why they fit this business right now. */
@@ -191,6 +202,11 @@ export interface RankedOpportunity {
   risks: string[];
   recommendedAction: string;
   estimatedValue?: string;
+  /** Carried through from discovery — enables one-tap call / website actions. */
+  phone?: string;
+  website?: string;
+  rating?: number;
+  reviewCount?: number;
 }
 
 export interface OutreachDraft {

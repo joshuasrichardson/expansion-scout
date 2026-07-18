@@ -168,6 +168,7 @@ const CATEGORY_SEGMENT: Record<
     label: 'Businesses that could book you on a schedule',
     whoTheyAre: 'Offices, fleets & property managers with a repeating need',
     discovery: 'Search Maps for offices, dealerships & managed properties',
+    mapsQuery: 'office park or property management company',
     why: 'One yes becomes predictable monthly revenue',
     keywords: /office|fleet|dealership|property|manager|campus|corporate|company|clinic|warehouse/i,
   },
@@ -177,6 +178,7 @@ const CATEGORY_SEGMENT: Record<
     label: 'Local businesses whose customers overlap yours',
     whoTheyAre: 'Established spots that could host or refer you',
     discovery: 'Search Maps for busy complementary businesses nearby',
+    mapsQuery: 'popular local businesses',
     why: 'Their existing traffic becomes your pipeline',
     keywords: /brewery|bar|gym|salon|shop|store|venue|apartment|complex|hoa|resident|cafe/i,
   },
@@ -186,6 +188,7 @@ const CATEGORY_SEGMENT: Record<
     label: 'Recurring local events & gatherings',
     whoTheyAre: 'Organizers of markets, tournaments & community events',
     discovery: 'Check event calendars & venue listings in your radius',
+    mapsQuery: 'event venue or farmers market',
     why: 'One booking puts you in front of a crowd',
     keywords: /market|festival|fair|tournament|game|sport|gathering|expo|show/i,
   },
@@ -195,6 +198,7 @@ const CATEGORY_SEGMENT: Record<
     label: 'High-traffic spots where your customers cluster',
     whoTheyAre: 'People who need you, where they already spend time',
     discovery: 'Search Maps for the busiest spots in your radius',
+    mapsQuery: 'busy shopping center or plaza',
     why: 'Immediate sales while bigger accounts develop',
     keywords: /park|plaza|downtown|mall|campus|lot|street|neighborhood/i,
   },
@@ -236,6 +240,8 @@ export function segmentsFromCategories(
       type,
       whoTheyAre: t.whoTheyAre,
       discovery: match ? `Search Maps for ${match.toLowerCase()} nearby` : t.discovery,
+      // The owner's own words make the sharpest Maps query.
+      mapsQuery: match ? match.toLowerCase() : t.mapsQuery,
       reach,
       why: t.why,
       category: cat,
@@ -280,6 +286,9 @@ export function rankOpportunitiesLocal(
       );
       const evidence = [
         `${c.distanceMiles.toFixed(1)} mi from you (~${travelMinutes} min)`,
+        ...(c.rating !== undefined
+          ? [`${c.rating.toFixed(1)}★${c.reviewCount ? ` across ${c.reviewCount} reviews` : ' on Google'}`]
+          : []),
         ...(c.context ? [capitalizeFirst(c.context)] : []),
         ...(focusBoost.has(c.category) ? [`Matches your focus: ${c.category}`] : []),
       ].slice(0, 3);
@@ -303,6 +312,10 @@ export function rankOpportunitiesLocal(
         // The heuristic ranker doesn't invent dollar figures — only Gemma
         // estimates value, and only as an explicit rough range.
         estimatedValue: undefined,
+        phone: c.phone,
+        website: c.website,
+        rating: c.rating,
+        reviewCount: c.reviewCount,
       } satisfies RankedOpportunity;
     })
     .sort((a, b) => b.score - a.score)

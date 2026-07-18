@@ -69,7 +69,18 @@ export function BusinessProvider({ children }: { children: React.ReactNode }) {
 
   const saveProfile = useCallback(
     (profile: BusinessProfileInput) =>
-      update((prev) => ({ profile, customer: prev?.customer, analysis: prev?.analysis })),
+      update((prev) => {
+        // Tweaking details keeps Gemma's accumulated understanding; changing
+        // WHAT the business is (name/type) must not leak the old business's
+        // customer picture or analysis into the new one.
+        const sameBusiness =
+          !!prev && prev.profile.name === profile.name && prev.profile.type === profile.type;
+        return {
+          profile,
+          customer: sameBusiness ? prev.customer : undefined,
+          analysis: sameBusiness ? prev.analysis : undefined,
+        };
+      }),
     [update],
   );
 

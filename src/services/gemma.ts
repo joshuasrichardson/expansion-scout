@@ -523,6 +523,7 @@ function parseSegment(raw: unknown): CustomerSegment | null {
     type,
     whoTheyAre: asString(o.whoTheyAre),
     discovery: asString(o.discovery),
+    mapsQuery: asString(o.mapsQuery) || undefined,
     reach: coerceReach(o.reach) ?? SEGMENT_DEFAULT_REACH[type],
     why: asString(o.why),
     category,
@@ -636,6 +637,10 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
             ? o.recommendedAction.trim()
             : `Reach out to ${source.name}.`,
         estimatedValue: typeof o.estimatedValue === 'string' ? o.estimatedValue : undefined,
+        phone: source.phone,
+        website: source.website,
+        rating: source.rating,
+        reviewCount: source.reviewCount,
       };
       return result;
     })
@@ -652,8 +657,9 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
  * what lets the UI present "backed by" facts without trusting free generation.
  */
 function groundedEvidence(lines: string[], source: PlaceCandidate): string[] {
-  const grounding = `${source.name} ${source.context ?? ''} ${source.category} ${source.address}`
-    .toLowerCase();
+  const grounding =
+    `${source.name} ${source.context ?? ''} ${source.category} ${source.address} ` +
+    `${source.rating ?? ''} ${source.reviewCount ?? ''} rating reviews stars`.toLowerCase();
   return lines.filter((line) => {
     const words = line.toLowerCase().match(/[a-z]{5,}/g) ?? [];
     return words.some((w) => grounding.includes(w));
@@ -663,6 +669,11 @@ function groundedEvidence(lines: string[], source: PlaceCandidate): string[] {
 /** The always-true facts about a candidate, as evidence lines. */
 function factEvidence(source: PlaceCandidate): string[] {
   const facts = [`${source.distanceMiles.toFixed(1)} mi from you`];
+  if (source.rating !== undefined) {
+    facts.push(
+      `${source.rating.toFixed(1)}★${source.reviewCount ? ` across ${source.reviewCount} reviews` : ' on Google'}`,
+    );
+  }
   if (source.context) facts.push(capitalizeFirst(source.context));
   return facts;
 }
@@ -718,15 +729,15 @@ function ANALYZE_PROMPT(p: BusinessProfileInput | InterviewProfile): string {
     customer
       ? `Ideal customer so far: ${customer.description}. Buying signals: ${customer.signals.join('; ')}. Gathers at: ${customer.locations.join(', ')}.`
       : '',
-    `Analyze where a ${p.type} with these strengths should focus to hit these goals. "focus" must be ONE concrete mission for today, stated as an outcome (e.g. "Pitch three property managers a standing weekly slot"), not a platitude.`,
+    `Analyze where a ${p.type} with these strengths should focus to hit these goals. "focus" must be ONE concrete mission for today: start with an action verb, name the buyer type and a countable target, and make it specific to THIS business — no generic phrasing, and do not copy wording from these instructions.`,
     'Then decide WHAT KINDS OF CUSTOMERS to look for. Every segment must be specific to a ' +
       p.type +
       " — name the kind of place or buyer, why they need THIS service, and why they'd pay repeatedly. Classify each into exactly one type from this taxonomy, and give its discovery method (how to FIND them) and reach channel (how to CONTACT them):",
     CUSTOMER_TAXONOMY,
     'Return 3–5 target segments, best-first. Rank segments that serve the owner\'s stated goals highest (recurring goals ⇒ recurring segments first).',
     'Category meanings: recurring = standing accounts/contracts; partnership = venues/orgs to co-serve or co-market with; event = high-volume gatherings; direct = high-traffic spots to serve individuals.',
-    '"type" is one of: physical-business|residential-community|event-venue|public-gathering|partner-org. "reach" is one of: walk-in|phone|email. "category" is one of: recurring|partnership|event|direct. Keep every string under 14 words.',
-    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("recurring"|"partnership"|"event"|"direct")[],"targetSegments":[{"label":string,"type":string,"whoTheyAre":string,"discovery":string,"reach":string,"why":string,"category":string}]}',
+    '"type" is one of: physical-business|residential-community|event-venue|public-gathering|partner-org. "reach" is one of: walk-in|phone|email. "category" is one of: recurring|partnership|event|direct. "mapsQuery" is the literal 2–5 word phrase to type into Google Maps to find this segment nearby (a kind of place, e.g. "property management offices" — never an instruction). Keep every string under 14 words.',
+    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("recurring"|"partnership"|"event"|"direct")[],"targetSegments":[{"label":string,"type":string,"whoTheyAre":string,"discovery":string,"mapsQuery":string,"reach":string,"why":string,"category":string}]}',
     JSON_RULES,
   ]
     .filter(Boolean)
@@ -788,6 +799,7 @@ function RANK_PROMPT(
     category: c.category,
     distanceMiles: Number(c.distanceMiles.toFixed(1)),
     context: c.context ?? '',
+    ...(c.rating !== undefined ? { rating: c.rating, reviews: c.reviewCount ?? 0 } : {}),
   }));
   return [
     `You are a growth consultant ranking nearby opportunities for a ${p.type}. Think like an operator: who is the buyer at each place, what exactly do they buy, how does the first sale happen.`,

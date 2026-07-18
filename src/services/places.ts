@@ -84,7 +84,8 @@ function queriesFor(
 ): { category: OpportunityCategory; query: string }[] {
   const segments = analysis?.targetSegments ?? [];
   const fromSegments = segments
-    .map((s) => ({ category: s.category, query: stripSearchVerbs(s.discovery) || s.label }))
+    // Gemma's explicit Maps phrase is the sharpest query; prose is last resort.
+    .map((s) => ({ category: s.category, query: s.mapsQuery || stripSearchVerbs(s.discovery) || s.label }))
     .filter((q) => q.query.trim().length > 3)
     .slice(0, 4);
   if (fromSegments.length >= 2) return fromSegments;
@@ -140,6 +141,10 @@ interface RawPlace {
   location?: { latitude?: number; longitude?: number };
   types?: string[];
   primaryType?: string;
+  rating?: number;
+  userRatingCount?: number;
+  nationalPhoneNumber?: string;
+  websiteUri?: string;
 }
 
 /** The comma-separated field mask — we only ever request what we normalize. */
@@ -150,6 +155,10 @@ const FIELD_MASK = [
   'places.location',
   'places.types',
   'places.primaryType',
+  'places.rating',
+  'places.userRatingCount',
+  'places.nationalPhoneNumber',
+  'places.websiteUri',
 ].join(',');
 
 /**
@@ -255,6 +264,10 @@ export function normalizePlace(
     address: raw.formattedAddress?.trim() ?? '',
     distanceMiles,
     context: contextFrom(raw),
+    rating: typeof raw.rating === 'number' ? raw.rating : undefined,
+    reviewCount: typeof raw.userRatingCount === 'number' ? raw.userRatingCount : undefined,
+    phone: raw.nationalPhoneNumber?.trim() || undefined,
+    website: raw.websiteUri?.trim() || undefined,
   };
 }
 

@@ -50,6 +50,12 @@ export default function OpportunityDetailScreen() {
         <ThemedText type="small" themeColor="textSecondary">
           {CATEGORY_ICON[o.category]} {CATEGORY_LABEL[o.category]} · {o.address || `near ${business?.profile.city ?? 'you'}`}
         </ThemedText>
+        {o.rating !== undefined && (
+          <ThemedText type="small" themeColor="textSecondary">
+            ⭐ {o.rating.toFixed(1)}
+            {o.reviewCount ? ` (${o.reviewCount} Google reviews)` : ' on Google'}
+          </ThemedText>
+        )}
       </View>
 
       <Card>
@@ -124,6 +130,13 @@ export default function OpportunityDetailScreen() {
         label="Generate outreach"
         onPress={() => router.push({ pathname: '/outreach', params: { id: o.id } })}
       />
+      {o.phone ? (
+        <PrimaryButton
+          label={`Call ${o.phone}`}
+          variant="secondary"
+          onPress={() => Linking.openURL(`tel:${o.phone!.replace(/[^\d+]/g, '')}`).catch(() => {})}
+        />
+      ) : null}
       <PrimaryButton
         label={planned ? '✓ On today’s plan' : 'Add to today’s plan'}
         variant="secondary"
@@ -131,6 +144,13 @@ export default function OpportunityDetailScreen() {
         onPress={() => plan.add(o)}
       />
       <PrimaryButton label="Navigate" variant="outlined" onPress={() => openMaps(o, business?.profile.city)} />
+      {o.website ? (
+        <PrimaryButton
+          label="Visit website"
+          variant="outlined"
+          onPress={() => Linking.openURL(o.website!).catch(() => {})}
+        />
+      ) : null}
     </Screen>
   );
 }

@@ -48,6 +48,15 @@ export default function InterviewScreen() {
   // The interview refines the owner's stored business — it needs one to exist.
   if (hydrated && !business) return <Redirect href="/profile" />;
 
+  /** Wrap up: distill the transcript into the profile and move to analysis. */
+  async function finish(finalHistory: InterviewTurn[]) {
+    if (!business) return;
+    setPhase('finishing');
+    const { data: profile } = await summarizeInterview(finalHistory, business.profile);
+    completeInterview(profile);
+    router.push('/analysis');
+  }
+
   async function handleNext() {
     const answer = draft.trim();
     if (!answer || phase !== 'asking' || !business) return;
@@ -65,10 +74,7 @@ export default function InterviewScreen() {
     const shouldStop = atMax || (decision.done && !belowMin);
 
     if (shouldStop) {
-      setPhase('finishing');
-      const { data: profile } = await summarizeInterview(nextHistory, business.profile);
-      completeInterview(profile);
-      router.push('/analysis');
+      await finish(nextHistory);
       return;
     }
 
@@ -129,6 +135,14 @@ export default function InterviewScreen() {
         onPress={handleNext}
         disabled={!canSubmit}
       />
+
+      {history.length >= MIN_QUESTIONS && (
+        <PrimaryButton
+          label="That's enough — build my plan"
+          variant="secondary"
+          onPress={() => void finish(history)}
+        />
+      )}
     </Screen>
   );
 }

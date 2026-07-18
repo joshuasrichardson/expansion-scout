@@ -1,4 +1,5 @@
 import { Redirect, useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
@@ -7,6 +8,7 @@ import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { getTodayWeather, type DayWeather } from '@/services/weather';
 import { useBusiness } from '@/state/business-context';
 
 /**
@@ -19,6 +21,21 @@ export default function DailyMissionScreen() {
   const router = useRouter();
   const theme = useTheme();
   const { business, hydrated } = useBusiness();
+  const [weather, setWeather] = useState<DayWeather | null>(null);
+
+  // Field work depends on the sky — fetch once, render only if it resolves.
+  const lat = business?.profile.latitude;
+  const lng = business?.profile.longitude;
+  useEffect(() => {
+    if (lat === undefined || lng === undefined) return;
+    let cancelled = false;
+    getTodayWeather(lat, lng).then((w) => {
+      if (!cancelled) setWeather(w);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lat, lng]);
 
   if (hydrated && !business) return <Redirect href="/profile" />;
   if (!business) return <Screen>{null}</Screen>;
@@ -48,6 +65,14 @@ export default function DailyMissionScreen() {
           {why}
         </ThemedText>
       </Card>
+
+      {weather && (
+        <View style={[styles.weather, { backgroundColor: weather.goodForFieldWork ? theme.accentSubtle : theme.scoreSubtle }]}>
+          <ThemedText type="small" style={{ color: weather.goodForFieldWork ? theme.accent : theme.warning }}>
+            {weather.goodForFieldWork ? '☀️' : '🌧'} {weather.hint}
+          </ThemedText>
+        </View>
+      )}
 
       <Card>
         <ThemedText type="label" themeColor="textMuted">
@@ -95,6 +120,11 @@ function capitalize(s: string): string {
 const styles = StyleSheet.create({
   header: { gap: Spacing.two },
   section: { gap: Spacing.two },
+  weather: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderRadius: Radius.md,
+  },
   previewRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   previewDot: { width: 8, height: 8, borderRadius: Radius.pill },
   previewName: { flex: 1 },

@@ -26,6 +26,7 @@ export interface PlanStop {
   longitude: number;
   travelMinutes: number;
   estimatedValue?: string;
+  phone?: string;
   done: boolean;
 }
 
@@ -60,6 +61,7 @@ function stopFrom(o: RankedOpportunity): PlanStop {
     longitude: o.longitude,
     travelMinutes: travelMinutesFor(o.distanceMiles),
     estimatedValue: o.estimatedValue,
+    phone: o.phone,
     done: false,
   };
 }

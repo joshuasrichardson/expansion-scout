@@ -80,7 +80,14 @@ export default function HomeScreen() {
           </Card>
 
           <PrimaryButton label="Start today's mission" onPress={() => router.push('/daily-mission')} />
-          <PrimaryButton label="Edit business" variant="secondary" onPress={() => router.push('/profile')} />
+          {analysis ? (
+            <PrimaryButton
+              label="Skip to today's growth plan"
+              variant="secondary"
+              onPress={() => router.push('/opportunities')}
+            />
+          ) : null}
+          <PrimaryButton label="Edit business" variant="outlined" onPress={() => router.push('/profile')} />
         </>
       )}
 

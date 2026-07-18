@@ -11,15 +11,29 @@ import { useTheme } from '@/hooks/use-theme';
 import type { BusinessProfileInput } from '@/services/gemma';
 import { geocodeCity } from '@/services/places';
 import { useBusiness } from '@/state/business-context';
+import { useOpportunities } from '@/state/opportunities-context';
+import { usePlan } from '@/state/plan-context';
 
 /**
  * Business Profile (T12) — where the app learns whose growth it's planning.
  * First run this is setup; afterwards it's editing. Everything stays on the
  * device (see services/profileStore.ts).
+ *
+ * The form waits for the device-cache read (`hydrated`) and remounts per
+ * business identity — otherwise a cold start races hydration and shows an
+ * empty form for a business that exists.
  */
 export default function ProfileScreen() {
+  const { business, hydrated } = useBusiness();
+  if (!hydrated) return <Screen>{null}</Screen>;
+  return <ProfileForm key={business ? `${business.profile.name}-${business.profile.type}` : 'new'} />;
+}
+
+function ProfileForm() {
   const router = useRouter();
   const { business, saveProfile, clear } = useBusiness();
+  const opportunities = useOpportunities();
+  const plan = usePlan();
   const existing = business?.profile;
 
   const [name, setName] = useState(existing?.name ?? '');
@@ -31,6 +45,7 @@ export default function ProfileScreen() {
   const [goals, setGoals] = useState((existing?.goals ?? []).join(', '));
   const [capabilities, setCapabilities] = useState((existing?.capabilities ?? []).join(', '));
   const [saving, setSaving] = useState(false);
+  const [confirmForget, setConfirmForget] = useState(false);
 
   const canSave = name.trim() && type.trim() && city.trim() && !saving;
 
@@ -57,6 +72,14 @@ export default function ProfileScreen() {
       capabilities: splitList(capabilities),
     };
     saveProfile(profile);
+    // A different business means the old session's plan and ranked list are
+    // about someone else — start those clean.
+    const sameBusiness =
+      !!existing && existing.name === profile.name && existing.type === profile.type;
+    if (!sameBusiness) {
+      opportunities.reset();
+      plan.reset();
+    }
     setSaving(false);
     if (router.canGoBack()) router.back();
     else router.replace('/');
@@ -121,11 +144,18 @@ export default function ProfileScreen() {
       />
 
       {existing ? (
+        // Destructive: first tap arms it, second tap actually forgets.
         <PrimaryButton
-          label="Forget this business"
+          label={confirmForget ? 'Tap again to erase everything' : 'Forget this business'}
           variant="outlined"
           onPress={() => {
+            if (!confirmForget) {
+              setConfirmForget(true);
+              return;
+            }
             clear();
+            opportunities.reset();
+            plan.reset();
             router.replace('/');
           }}
         />
