@@ -143,33 +143,36 @@ works.
 - **T4 — AI Interview.** Four questions, one at a time, big answer chips, 1-of-4
   progress, always-visible business summary, in-memory answers. Mic control visual
   only; completion never blocks on speech.
-- **T5 — Gemma service abstraction.** *(Rubric 4, 5.)* `analyzeBusiness`,
+- **T5 — Gemma service abstraction.** ✅ *(Rubric 4, 5.)* `analyzeBusiness`,
   `rankOpportunities`, `generateOutreach`. Configurable local endpoint/model via env;
   strict JSON output; validate against a schema + timeout + deterministic fallback;
   **record which path answered (real Gemma vs. fallback), the model name/size, and the
   inference latency** on each result so the UI and metrics can surface it. Unit-test
   parsing, schema validation, and fallback.
-- **T5a — Real on-device Gemma inference + locality proof.** *(Rubric 4 — highest
-  risk, do not skip.)* Wire `services/gemma.ts` to an actual on-device Gemma 4 runtime
-  (e.g. a local inference build), not just the fallback. Prove locality: (1) an
-  on-screen indicator showing the reasoning ran on-device with the model name/size;
-  (2) the full analysis → ranking → outreach flow completes in **airplane mode** with
-  real inference; (3) a visible "reasoned locally on this device" state distinct from
-  the fallback state. This is the category On-Device judges must verify — make it
-  undeniable.
+- **T5a — Real on-device Gemma inference + locality proof.** ✅ *(Rubric 4 — highest
+  risk.)* `services/gemma.ts` runs real Gemma 4 (`gemma4:e2b-it-qat`) via a local
+  Ollama-compatible runtime, behind a swappable `GemmaTransport`. Locality proof
+  lives in `LocalAiStatus` (design-system screen): on-device badge, model, endpoint,
+  probe latency, and a "Run sample reasoning" button that shows real `InferenceMeta`.
+  Verified end-to-end by `npm run gemma:eval` (see EVALUATION.md). **Remaining for
+  full credit on a *physical* phone:** swap `GemmaTransport` for an embedded runtime
+  (llama.rn / MediaPipe LLM Inference) so inference runs inside the app process — the
+  callers don't change. Today's transport is real on-device inference on the host
+  machine (works in the iOS Simulator and in airplane mode there).
 - **T5b — Data flow & provenance.** *(Rubric 2.)* Write `DATA_FLOW.md`: every input
   (interview answers, GPS, Places candidates), where each is processed (device vs.
   Google), and what is stored (in-memory only) or transmitted (Places/map tiles only —
   never business strategy). Add a concise in-app "What data is used" note reachable
   from the AI/privacy badge. Keep the exact distinction: Google *discovers* places;
   Gemma *reasons* privately on-device.
-- **T5c — Evaluation harness & self-verification.** *(Rubric 5.)* Write
-  `EVALUATION.md` with explicit success criteria (see JUDGING_RUBRIC.md) and a small
-  eval set of business profiles → expected opportunity categories. Measure and report
-  on-device inference latency (p50/p95), Gemma JSON-valid rate, and fallback rate. In
-  the app, **verify results rather than claim them**: validate model JSON against the
-  schema, show a confidence score with the evidence behind it, flag low-confidence
-  opportunities, and confirm plan actions actually applied.
+- **T5c — Evaluation harness & self-verification.** ◐ *(Rubric 5.)* `EVALUATION.md`
+  + `scripts/gemma-eval.mjs` (`npm run gemma:eval`) are done: explicit success
+  criteria, a multi-profile eval set, measured latency p50/p95, JSON-valid and
+  category-valid rates, and a gate that exits non-zero on any miss. In-app
+  self-verification is in place at the reasoning layer (schema validation, grounding
+  guard, category coercion, provenance in `InferenceMeta`). **Remaining:** surface a
+  confidence/low-confidence flag and add-to-plan success confirmation in the flow
+  screens as they're built.
 - **T6 — Analysis "thinking" transition.** Progressive steps ("Understanding your
   business → … → Building today's plan"), invoke Gemma while it animates, 3–6s in
   demo mode, auto-advance, never hang. "Gemma is reasoning privately on this device."

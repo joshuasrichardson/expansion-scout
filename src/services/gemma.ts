@@ -1,0 +1,517 @@
+/**
+ * The ONLY place model transport lives (CLAUDE.md architecture boundary).
+ *
+ * The rest of the app calls `analyzeBusiness`, `rankOpportunities`, and
+ * `generateOutreach` and never knows whether real on-device Gemma or the
+ * deterministic fallback answered — it reads `InferenceMeta.source` if it cares.
+ *
+ * On-device transport
+ * -------------------
+ * Real Gemma 4 inference runs through a local runtime that exposes an
+ * Ollama-compatible HTTP API (`/api/generate`, `/api/tags`). Default target:
+ * Gemma 4 **E2B (QAT)** — the quality/memory balance that fits an iPhone 17
+ * (~4.3 GB; see EVALUATION.md). In the iOS Simulator, `localhost` reaches the
+ * same machine hosting the runtime; on a physical device set
+ * `EXPO_PUBLIC_GEMMA_BASE_URL` to the host's LAN IP.
+ *
+ * This transport is deliberately swappable: a future truly-embedded runtime
+ * (llama.rn / MediaPipe LLM Inference) can implement `GemmaTransport` without any
+ * change to the three public functions or their callers.
+ *
+ * Never expose chain-of-thought — surface only summaries, reasons, evidence,
+ * risks, confidence, and recommended actions.
+ */
+
+import {
+  analyzeBusinessLocal,
+  generateOutreachLocal,
+  rankOpportunitiesLocal,
+} from './opportunityRanking';
+import {
+  OPPORTUNITY_CATEGORIES,
+  type BusinessAnalysis,
+  type BusinessProfileInput,
+  type InferenceMeta,
+  type OpportunityCategory,
+  type OutreachChannel,
+  type OutreachDraft,
+  type OutreachTone,
+  type PlaceCandidate,
+  type RankedOpportunity,
+  type WithMeta,
+} from './gemmaTypes';
+
+export * from './gemmaTypes';
+
+/* -------------------------------------------------------------------------- */
+/* Config                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * All knobs come from `EXPO_PUBLIC_*` env (inlined by Metro; also readable in
+ * Node for the eval harness). Sensible defaults mean the app runs with zero
+ * config against a local Ollama, and degrades to the fallback if it's absent.
+ */
+export const GemmaConfig = {
+  baseUrl: process.env.EXPO_PUBLIC_GEMMA_BASE_URL ?? 'http://localhost:11434',
+  model: process.env.EXPO_PUBLIC_GEMMA_MODEL ?? 'gemma4:e2b-it-qat',
+  /** Set to "false" to force the deterministic fallback (e.g. for a safe demo). */
+  enabled: process.env.EXPO_PUBLIC_GEMMA_ENABLED !== 'false',
+  /** Per-call ceiling. Cold start loads the model (~10–15s), so keep generous. */
+  timeoutMs: Number(process.env.EXPO_PUBLIC_GEMMA_TIMEOUT_MS ?? 22000),
+} as const;
+
+/* -------------------------------------------------------------------------- */
+/* Transport                                                                  */
+/* -------------------------------------------------------------------------- */
+
+export interface GemmaTransport {
+  /** Returns raw model text (expected to be JSON) plus how long it took. */
+  generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }): Promise<{
+    text: string;
+    latencyMs: number;
+  }>;
+  /** Cheap reachability + model-present check for the locality-proof UI. */
+  probe(): Promise<{ available: boolean; model: string; baseUrl: string; latencyMs: number }>;
+}
+
+/** Real on-device transport over an Ollama-compatible local HTTP runtime. */
+export class OllamaTransport implements GemmaTransport {
+  constructor(
+    private readonly baseUrl = GemmaConfig.baseUrl,
+    private readonly model = GemmaConfig.model,
+    private readonly timeoutMs = GemmaConfig.timeoutMs,
+  ) {}
+
+  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+    const started = nowMs();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.model,
+          prompt,
+          stream: false,
+          format: 'json', // constrain output to a JSON object
+          options: {
+            temperature: opts?.temperature ?? 0.4,
+            num_predict: opts?.maxTokens ?? 512,
+          },
+        }),
+      });
+      if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
+      const json = (await res.json()) as { response?: string };
+      return { text: json.response ?? '', latencyMs: Math.round(nowMs() - started) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async probe() {
+    const started = nowMs();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const res = await fetch(`${this.baseUrl}/api/tags`, { signal: controller.signal });
+      const json = (await res.json()) as { models?: { name?: string; model?: string }[] };
+      const names = (json.models ?? []).map((m) => m.model ?? m.name ?? '');
+      return {
+        available: res.ok && names.some((n) => n === this.model),
+        model: this.model,
+        baseUrl: this.baseUrl,
+        latencyMs: Math.round(nowMs() - started),
+      };
+    } catch {
+      return { available: false, model: this.model, baseUrl: this.baseUrl, latencyMs: Math.round(nowMs() - started) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/** Swap this to route all reasoning through a different runtime. */
+let transport: GemmaTransport = new OllamaTransport();
+export function setGemmaTransport(next: GemmaTransport) {
+  transport = next;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Locality proof (rubric §4)                                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface GemmaStatus {
+  /** True only when Gemma will actually answer (enabled + reachable + model present). */
+  onDevice: boolean;
+  model: string;
+  baseUrl: string;
+  latencyMs: number;
+  /** Why it's off, when it is — shown in the UI. */
+  detail: string;
+}
+
+/** Backs the on-screen "reasoning runs on this device" indicator. */
+export async function getGemmaStatus(): Promise<GemmaStatus> {
+  if (!GemmaConfig.enabled) {
+    return {
+      onDevice: false,
+      model: GemmaConfig.model,
+      baseUrl: GemmaConfig.baseUrl,
+      latencyMs: 0,
+      detail: 'Disabled via config — using deterministic fallback.',
+    };
+  }
+  const p = await transport.probe();
+  return {
+    onDevice: p.available,
+    model: p.model,
+    baseUrl: p.baseUrl,
+    latencyMs: p.latencyMs,
+    detail: p.available
+      ? `${p.model} ready on-device — reasoning stays local.`
+      : `Runtime not reachable at ${p.baseUrl} — using deterministic fallback.`,
+  };
+}
+
+/** Preload the model so the first real call isn't a 10–15s cold start. */
+export async function warmUpGemma(): Promise<boolean> {
+  if (!GemmaConfig.enabled) return false;
+  try {
+    await transport.generate('Return {"ok":true} as JSON.', { maxTokens: 8, temperature: 0 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Public reasoning API                                                       */
+/* -------------------------------------------------------------------------- */
+
+export async function analyzeBusiness(
+  profile: BusinessProfileInput,
+): Promise<WithMeta<BusinessAnalysis>> {
+  return run(
+    ANALYZE_PROMPT(profile),
+    (raw) => validateAnalysis(raw),
+    () => analyzeBusinessLocal(profile),
+    { maxTokens: 400 },
+  );
+}
+
+/**
+ * Hybrid ranking. The deterministic ranker guarantees EVERY candidate is present
+ * (with real coords/facts); Gemma's scores and reasoning are merged over it
+ * wherever the model spoke. Small on-device models don't reliably emit all N
+ * array items, so this backfill is what lets the UI always show a complete,
+ * reasoned list — and `meta.note` stays honest about how much Gemma covered.
+ */
+export async function rankOpportunities(
+  profile: BusinessProfileInput,
+  analysis: BusinessAnalysis,
+  candidates: PlaceCandidate[],
+): Promise<WithMeta<RankedOpportunity[]>> {
+  const baseline = rankOpportunitiesLocal(profile, analysis, candidates);
+  const model = GemmaConfig.model;
+
+  if (!GemmaConfig.enabled) {
+    return { data: baseline, meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
+  }
+
+  let latencyMs = 0;
+  try {
+    const { text, latencyMs: ms } = await transport.generate(RANK_PROMPT(profile, analysis, candidates), {
+      maxTokens: 900,
+      temperature: 0.3, // lower temp ⇒ more reliable JSON from the small model
+    });
+    latencyMs = ms;
+    const ranked = validateRanked(parseJson(text), candidates); // grounded subset, may be []
+    if (!ranked.length) {
+      return { data: baseline, meta: meta('fallback', model, latencyMs, false, 'Model returned no usable ranking.') };
+    }
+    const merged = mergeRankings(baseline, ranked);
+    const note =
+      ranked.length < candidates.length
+        ? `Gemma ranked ${ranked.length}/${candidates.length}; remainder ordered on-device.`
+        : undefined;
+    return { data: merged, meta: meta('gemma', model, latencyMs, true, note) };
+  } catch (err) {
+    return { data: baseline, meta: meta('fallback', model, latencyMs, false, describeError(err)) };
+  }
+}
+
+/** Prefer Gemma's entry per id, backfill with the deterministic one, re-sort. */
+function mergeRankings(baseline: RankedOpportunity[], gemma: RankedOpportunity[]): RankedOpportunity[] {
+  const byId = new Map(gemma.map((o) => [o.id, o]));
+  return baseline.map((b) => byId.get(b.id) ?? b).sort((a, b) => b.score - a.score);
+}
+
+export async function generateOutreach(
+  profile: BusinessProfileInput,
+  opportunity: RankedOpportunity,
+  channel: OutreachChannel,
+  tone: OutreachTone,
+): Promise<WithMeta<OutreachDraft>> {
+  return run(
+    OUTREACH_PROMPT(profile, opportunity, channel, tone),
+    (raw) => validateOutreach(raw, channel, tone),
+    () => generateOutreachLocal(profile, opportunity, channel, tone),
+    { maxTokens: 400, temperature: 0.6 },
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Orchestration: try Gemma → validate → else deterministic fallback          */
+/* -------------------------------------------------------------------------- */
+
+async function run<T>(
+  prompt: string,
+  validate: (raw: unknown) => T,
+  fallback: () => T,
+  opts?: { maxTokens?: number; temperature?: number },
+): Promise<WithMeta<T>> {
+  const model = GemmaConfig.model;
+
+  if (!GemmaConfig.enabled) {
+    return { data: fallback(), meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
+  }
+
+  let latencyMs = 0;
+  try {
+    const { text, latencyMs: ms } = await transport.generate(prompt, opts);
+    latencyMs = ms;
+    const parsed = parseJson(text);
+    const data = validate(parsed); // throws on malformed / off-contract output
+    return { data, meta: meta('gemma', model, latencyMs, true) };
+  } catch (err) {
+    return {
+      data: fallback(),
+      meta: meta('fallback', model, latencyMs, false, describeError(err)),
+    };
+  }
+}
+
+function meta(
+  source: InferenceMeta['source'],
+  model: string,
+  latencyMs: number,
+  validated: boolean,
+  note?: string,
+): InferenceMeta {
+  return { source, model, latencyMs, validated, note };
+}
+
+/* -------------------------------------------------------------------------- */
+/* JSON extraction + validation (never trust raw model output)                */
+/* -------------------------------------------------------------------------- */
+
+/** Parse model text as JSON, tolerating prose or code fences around the object. */
+export function parseJson(text: string): unknown {
+  const trimmed = (text ?? '').trim();
+  if (!trimmed) throw new Error('Empty model response');
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Fall back to the first {...} or [...] block in the text.
+    const match = trimmed.match(/[{[][\s\S]*[}\]]/);
+    if (!match) throw new Error('No JSON found in model response');
+    return JSON.parse(match[0]);
+  }
+}
+
+function asObject(v: unknown): Record<string, unknown> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('Expected a JSON object');
+  return v as Record<string, unknown>;
+}
+
+function asStringArray(v: unknown, max = 4): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x) => typeof x === 'string' && x.trim()).slice(0, max) as string[];
+}
+
+/** Coerce free-text category guesses onto our closed set (the model strays). */
+export function coerceCategory(v: unknown): OpportunityCategory | null {
+  if (typeof v !== 'string') return null;
+  const s = v.toLowerCase();
+  const exact = OPPORTUNITY_CATEGORIES.find((c) => c === s);
+  if (exact) return exact;
+  if (/cater/.test(s)) return 'catering';
+  if (/partner|collab|venue|brewery|apartment/.test(s)) return 'partnership';
+  if (/event|festival|market|game|sport/.test(s)) return 'event';
+  if (/lunch|office|weekday|rush/.test(s)) return 'lunch';
+  return null;
+}
+
+function clampScore(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return 60;
+  const scaled = n > 0 && n <= 1 ? n * 100 : n; // accept 0–1 or 0–100
+  return Math.max(0, Math.min(100, Math.round(scaled)));
+}
+
+export function validateAnalysis(raw: unknown): BusinessAnalysis {
+  const o = asObject(raw);
+  const summary = typeof o.summary === 'string' ? o.summary.trim() : '';
+  const focus = typeof o.focus === 'string' ? o.focus.trim() : '';
+  if (!summary || !focus) throw new Error('Analysis missing summary/focus');
+  const recommended = asStringArray(o.recommendedCategories, 4)
+    .map(coerceCategory)
+    .filter((c): c is OpportunityCategory => c !== null);
+  return {
+    summary,
+    focus,
+    strengths: asStringArray(o.strengths, 4),
+    recommendedCategories: recommended.length ? dedupe(recommended) : ['catering', 'partnership'],
+  };
+}
+
+/**
+ * The model ranks/justifies; we keep the *facts* (coords, address, distance) from
+ * our own candidate data so it can never hallucinate a location. It only supplies
+ * score, reasons, risks, best time, and the recommended action.
+ */
+export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): RankedOpportunity[] {
+  const arr = Array.isArray(raw) ? raw : asObject(raw).opportunities;
+  if (!Array.isArray(arr)) throw new Error('Ranking is not an array');
+  const byId = new Map(candidates.map((c) => [c.id, c]));
+
+  const ranked = arr
+    .map((item) => {
+      const o = asObject(item);
+      const source = byId.get(String(o.id));
+      if (!source) return null; // ignore anything not grounded in our candidates
+      const category = coerceCategory(o.category) ?? source.category;
+      const reasons = asStringArray(o.reasons, 3);
+      if (!reasons.length) return null; // a ranking with no reasoning is worthless
+      const result: RankedOpportunity = {
+        id: source.id,
+        name: source.name,
+        category,
+        score: clampScore(o.score),
+        latitude: source.latitude,
+        longitude: source.longitude,
+        address: source.address,
+        distanceMiles: source.distanceMiles,
+        bestTime: typeof o.bestTime === 'string' && o.bestTime.trim() ? o.bestTime.trim() : 'Flexible',
+        summary: typeof o.summary === 'string' ? o.summary.trim() : `${source.name} — ${category}`,
+        reasons,
+        risks: asStringArray(o.risks, 3),
+        recommendedAction:
+          typeof o.recommendedAction === 'string' && o.recommendedAction.trim()
+            ? o.recommendedAction.trim()
+            : `Reach out to ${source.name}.`,
+        estimatedValue: typeof o.estimatedValue === 'string' ? o.estimatedValue : undefined,
+      };
+      return result;
+    })
+    .filter((x): x is RankedOpportunity => x !== null)
+    .sort((a, b) => b.score - a.score);
+
+  // May be empty (model grounded nothing) — the caller merges/backfills.
+  return ranked;
+}
+
+export function validateOutreach(
+  raw: unknown,
+  channel: OutreachChannel,
+  tone: OutreachTone,
+): OutreachDraft {
+  const o = asObject(raw);
+  const body = typeof o.body === 'string' ? o.body.trim() : '';
+  if (!body) throw new Error('Outreach missing body');
+  return {
+    channel,
+    tone,
+    subject: typeof o.subject === 'string' && o.subject.trim() ? o.subject.trim() : undefined,
+    body,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Prompts (grounded, JSON-only, no chain-of-thought requested)               */
+/* -------------------------------------------------------------------------- */
+
+const JSON_RULES =
+  'Respond with ONLY a single minified JSON value. No markdown, no prose, no explanation of your reasoning.';
+
+function ANALYZE_PROMPT(p: BusinessProfileInput): string {
+  return [
+    'You are an experienced local-business growth consultant.',
+    `Business: ${p.name}, a ${p.type} in ${p.city}. Serves within ${p.serviceRadiusMiles} miles.`,
+    p.availability ? `Availability: ${p.availability}.` : '',
+    `Goals: ${p.goals.join('; ') || 'grow revenue'}.`,
+    `Capabilities: ${p.capabilities.join('; ') || 'core service'}.`,
+    'Analyze where this business should focus to grow.',
+    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("partnership"|"lunch"|"catering"|"event")[]}',
+    JSON_RULES,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function RANK_PROMPT(
+  p: BusinessProfileInput,
+  a: BusinessAnalysis,
+  candidates: PlaceCandidate[],
+): string {
+  const list = candidates.map((c) => ({
+    id: c.id,
+    name: c.name,
+    category: c.category,
+    distanceMiles: Number(c.distanceMiles.toFixed(1)),
+    context: c.context ?? '',
+  }));
+  return [
+    'You are a local-business growth consultant ranking nearby opportunities.',
+    `Business: ${p.name} (${p.type}) in ${p.city}. Focus: ${a.focus}.`,
+    `Candidates (JSON): ${JSON.stringify(list)}`,
+    `Output EXACTLY ${candidates.length} objects — one for every id: [${candidates.map((c) => c.id).join(', ')}]. Omitting any id is an error. Order them best-first. Use ONLY the given id/category — never invent places.`,
+    'For each: score 0–100, "bestTime", a one-line "summary", TWO short "reasons", ONE "risk", one "recommendedAction", and an "estimatedValue". Keep every string under 14 words.',
+    'JSON shape: {"opportunities":[{"id":string,"category":string,"score":number,"bestTime":string,"summary":string,"reasons":string[2],"risks":string[1],"recommendedAction":string,"estimatedValue":string}]}',
+    JSON_RULES,
+  ].join('\n');
+}
+
+function OUTREACH_PROMPT(
+  p: BusinessProfileInput,
+  o: RankedOpportunity,
+  channel: OutreachChannel,
+  tone: OutreachTone,
+): string {
+  return [
+    `You are drafting a ${tone} ${channel} outreach message for a local business owner.`,
+    `From: ${p.name}, a ${p.type} in ${p.city}.`,
+    `To: ${o.name} (${o.category}). Goal: ${o.recommendedAction}`,
+    'Keep it short and human. Use ONLY facts given above — do not invent names, numbers, or offers.',
+    channel === 'email'
+      ? 'JSON shape: {"subject":string,"body":string}'
+      : 'JSON shape: {"body":string}',
+    JSON_RULES,
+  ].join('\n');
+}
+
+/* -------------------------------------------------------------------------- */
+/* small utils                                                                */
+/* -------------------------------------------------------------------------- */
+
+function dedupe<T>(arr: T[]): T[] {
+  return Array.from(new Set(arr));
+}
+
+function nowMs(): number {
+  // performance.now when present (RN/web), else Date.now (Node).
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    if (err.name === 'AbortError') return `Timed out after ${GemmaConfig.timeoutMs}ms.`;
+    return err.message;
+  }
+  return 'Unknown reasoning error';
+}

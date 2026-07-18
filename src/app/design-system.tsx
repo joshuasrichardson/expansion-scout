@@ -1,6 +1,7 @@
 import { StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
+import { LocalAiStatus } from '@/components/local-ai-status';
 import { PrimaryButton } from '@/components/primary-button';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
@@ -22,6 +23,7 @@ export default function DesignSystemScreen() {
         </ThemedText>
       </View>
 
+      <LocalAiStatus />
       <ColorSection />
       <TypeSection />
       <ButtonSection />
