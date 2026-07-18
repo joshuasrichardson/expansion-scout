@@ -22,7 +22,7 @@ export default function OpportunityDetailScreen() {
   const router = useRouter();
   const theme = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { ranked } = useOpportunities();
+  const { ranked, rankMeta } = useOpportunities();
   const { business } = useBusiness();
   const plan = usePlan();
 
@@ -65,6 +65,12 @@ export default function OpportunityDetailScreen() {
           <Stat label="Best time" value={o.bestTime} />
           {o.estimatedValue ? <Stat label="Est. value" value={o.estimatedValue} /> : null}
         </View>
+        <View
+          accessibilityLabel={`Opportunity score ${o.score} out of 100`}
+          style={[styles.scoreTrack, { backgroundColor: theme.backgroundSelected }]}
+        >
+          <View style={[styles.scoreFill, { backgroundColor: theme.score, width: `${o.score}%` }]} />
+        </View>
       </Card>
 
       <View style={styles.section}>
@@ -103,6 +109,11 @@ export default function OpportunityDetailScreen() {
           {o.confidence < 55 && (
             <ThemedText type="caption" themeColor="textMuted">
               Scout is less sure about this one — worth a quick check before you commit time to it.
+            </ThemedText>
+          )}
+          {rankMeta?.source === 'gemma' && rankMeta.validated && (
+            <ThemedText type="caption" themeColor="textMuted">
+              ✓ Checked on your device — schema-validated, every fact traced to discovery data.
             </ThemedText>
           )}
         </View>
@@ -215,4 +226,6 @@ const styles = StyleSheet.create({
   confidenceRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, marginTop: Spacing.one },
   confidenceTrack: { flex: 1, height: 6, borderRadius: 3, overflow: 'hidden' },
   confidenceFill: { height: 6, borderRadius: 3 },
+  scoreTrack: { height: 6, borderRadius: 3, overflow: 'hidden', marginTop: Spacing.one },
+  scoreFill: { height: 6, borderRadius: 3 },
 });

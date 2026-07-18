@@ -13,11 +13,12 @@
  * card carousel via `selectedId` / `onSelect`.
  */
 
-import { useState } from 'react';
-import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Animated, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Radius } from '@/constants/theme';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useTheme } from '@/hooks/use-theme';
 import type { OpportunityCategory, RankedOpportunity } from '@/services/gemma';
 
@@ -49,6 +50,8 @@ export interface ScoutMapProps {
   radiusMiles?: number;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Opportunity ids already on today's plan — their pins wear a check badge. */
+  plannedIds?: ReadonlySet<string>;
 }
 
 /** Linear geo → pixel projection over the padded bounding box of all points. */
@@ -67,7 +70,7 @@ function projector(points: GeoPoint[], width: number, height: number) {
   });
 }
 
-export function SchematicMap({ opportunities, origin, selectedId, onSelect }: ScoutMapProps) {
+export function SchematicMap({ opportunities, origin, selectedId, onSelect, plannedIds }: ScoutMapProps) {
   const theme = useTheme();
   const [size, setSize] = useState({ width: 0, height: 0 });
 
@@ -120,40 +123,117 @@ export function SchematicMap({ opportunities, origin, selectedId, onSelect }: Sc
       {project &&
         [...opportunities]
           .sort((a, b) => (a.id === selectedId ? 1 : b.id === selectedId ? -1 : 0))
-          .map((o) => {
-            const { x, y } = project(o);
-            const selected = o.id === selectedId;
-            return (
-              <Pressable
-                key={o.id}
-                accessibilityRole="button"
-                accessibilityLabel={`${o.name}, ${o.category}, score ${o.score}`}
-                accessibilityState={{ selected }}
-                onPress={() => onSelect(o.id)}
-                style={[
-                  styles.pin,
-                  {
-                    left: x - (selected ? 26 : 18),
-                    top: y - (selected ? 26 : 18),
-                    width: selected ? 52 : 36,
-                    height: selected ? 52 : 36,
-                    borderRadius: selected ? 26 : 18,
-                    backgroundColor: selected ? theme.accent : theme.background,
-                    borderColor: selected ? theme.accent : theme.border,
-                  },
-                ]}
-              >
-                <ThemedText style={{ fontSize: selected ? 18 : 14, lineHeight: selected ? 22 : 18 }}>
-                  {CATEGORY_ICON[o.category]}
-                </ThemedText>
-                {selected && (
-                  <ThemedText type="caption" style={{ color: theme.onAccent, fontWeight: '700' }}>
-                    {o.score}
-                  </ThemedText>
-                )}
-              </Pressable>
-            );
-          })}
+          .map((o) => (
+            <SchematicPin
+              key={o.id}
+              opportunity={o}
+              position={project(o)}
+              selected={o.id === selectedId}
+              planned={plannedIds?.has(o.id) ?? false}
+              // Rank order (not render order) drives the drop-in stagger.
+              rankIndex={opportunities.findIndex((r) => r.id === o.id)}
+              onSelect={onSelect}
+            />
+          ))}
+    </View>
+  );
+}
+
+/**
+ * One opportunity pin. Drops in on mount — staggered by rank so the reveal
+ * reads "Gemma's picks landing, best first" — and wears a check badge once the
+ * owner puts the place on today's plan.
+ */
+function SchematicPin({
+  opportunity: o,
+  position,
+  selected,
+  planned,
+  rankIndex,
+  onSelect,
+}: {
+  opportunity: RankedOpportunity;
+  position: { x: number; y: number };
+  selected: boolean;
+  planned: boolean;
+  rankIndex: number;
+  onSelect: (id: string) => void;
+}) {
+  const theme = useTheme();
+  const reduceMotion = useReducedMotion();
+  const [anim] = useState(() => new Animated.Value(0));
+
+  useEffect(() => {
+    if (reduceMotion) {
+      anim.setValue(1);
+      return;
+    }
+    const entrance = Animated.spring(anim, {
+      toValue: 1,
+      delay: Math.min(Math.max(rankIndex, 0), 8) * 90,
+      useNativeDriver: true,
+      friction: 6,
+      tension: 60,
+    });
+    entrance.start();
+    return () => entrance.stop();
+    // Entrance runs once per mount; rank changes must not re-drop the pin.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reduceMotion]);
+
+  const half = selected ? 26 : 18;
+  return (
+    <Animated.View
+      style={{
+        position: 'absolute',
+        left: position.x - half,
+        top: position.y - half,
+        opacity: anim,
+        transform: [
+          { translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] }) },
+          { scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }) },
+        ],
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${o.name}, ${CATEGORY_LABEL[o.category]}, score ${o.score}${planned ? ', on today’s plan' : ''}`}
+        accessibilityState={{ selected }}
+        onPress={() => onSelect(o.id)}
+        style={[
+          styles.pin,
+          {
+            width: half * 2,
+            height: half * 2,
+            borderRadius: half,
+            backgroundColor: selected ? theme.accent : theme.background,
+            borderColor: selected ? theme.accent : theme.border,
+          },
+        ]}
+      >
+        <ThemedText style={{ fontSize: selected ? 18 : 14, lineHeight: selected ? 22 : 18 }}>
+          {CATEGORY_ICON[o.category]}
+        </ThemedText>
+        {selected && (
+          <ThemedText type="caption" style={{ color: theme.onAccent, fontWeight: '700' }}>
+            {o.score}
+          </ThemedText>
+        )}
+        {planned && <PlannedBadge />}
+      </Pressable>
+    </Animated.View>
+  );
+}
+
+/** Tiny check badge for pins whose place is already on today's plan. */
+export function PlannedBadge() {
+  const theme = useTheme();
+  return (
+    <View
+      pointerEvents="none"
+      style={[styles.plannedBadge, { backgroundColor: theme.success, borderColor: theme.background }]}
+    >
+      <ThemedText style={styles.plannedCheck}>✓</ThemedText>
     </View>
   );
 }
@@ -168,7 +248,6 @@ const styles = StyleSheet.create({
   origin: { position: 'absolute', alignItems: 'center', width: 44, gap: 2 },
   originDot: { width: 14, height: 14, borderRadius: Radius.pill, borderWidth: 3 },
   pin: {
-    position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
@@ -178,4 +257,16 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
   },
+  plannedBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plannedCheck: { color: '#FFFFFF', fontSize: 9, lineHeight: 11, fontWeight: '700' },
 });

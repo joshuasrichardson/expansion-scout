@@ -10,6 +10,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useBusiness } from '@/state/business-context';
+import { usePlan } from '@/state/plan-context';
 
 /**
  * Launch / Home (T3). Centered on the owner's own business: first run asks for
@@ -22,9 +23,12 @@ export default function HomeScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const { business, hydrated } = useBusiness();
+  const { stops } = usePlan();
 
   const profile = business?.profile;
   const analysis = business?.analysis;
+  const stopsDone = stops.filter((s) => s.done).length;
+  const nextStop = stops.find((s) => !s.done);
 
   return (
     <Screen contentStyle={{ paddingTop: insets.top + Spacing.four }}>
@@ -63,8 +67,26 @@ export default function HomeScreen() {
             </ThemedText>
           </View>
 
-          <Card>
-            <ThemedText type="label" themeColor="textMuted">
+          <View style={styles.metaChips}>
+            {[capitalize(profile.type), profile.city, `${profile.serviceRadiusMiles} mi radius`]
+              .filter(Boolean)
+              .map((chip) => (
+                <View
+                  key={chip}
+                  style={[
+                    styles.metaChip,
+                    { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+                  ]}
+                >
+                  <ThemedText type="caption" themeColor="textSecondary">
+                    {chip}
+                  </ThemedText>
+                </View>
+              ))}
+          </View>
+
+          <Card style={{ backgroundColor: theme.accentSubtle, borderColor: theme.accent }}>
+            <ThemedText type="label" style={{ color: theme.accent }}>
               TODAY&apos;S MISSION
             </ThemedText>
             <ThemedText type="subtitle">
@@ -80,6 +102,20 @@ export default function HomeScreen() {
               </ThemedText>
             )}
           </Card>
+
+          {stops.length > 0 && (
+            <Card onPress={() => router.push('/plan')}>
+              <ThemedText type="label" themeColor="textMuted">
+                TODAY&apos;S PLAN SO FAR
+              </ThemedText>
+              <ThemedText type="bodyBold">
+                {stops.length} {stops.length === 1 ? 'stop' : 'stops'} · {stopsDone} done
+              </ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {nextStop ? `Next: ${nextStop.name} · ${nextStop.time}` : 'All stops complete 🎉'}
+              </ThemedText>
+            </Card>
+          )}
 
           <PrimaryButton label="Start today's mission" onPress={() => router.push('/daily-mission')} />
           {analysis ? (
@@ -113,6 +149,13 @@ function capitalize(s: string): string {
 const styles = StyleSheet.create({
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   header: { gap: Spacing.two },
+  metaChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, marginTop: -Spacing.two },
+  metaChip: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   aiBadge: {
     flexDirection: 'row',
     alignItems: 'center',

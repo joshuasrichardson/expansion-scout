@@ -35,6 +35,11 @@ interface OpportunitiesState {
    */
   loadingDetail: string | null;
   ranked: RankedOpportunity[];
+  /**
+   * When the pipeline last landed in `ready` (epoch ms) — screens use it to
+   * stagger the reveal only for elements mounting right as results arrive.
+   */
+  readyAt: number | null;
   /** Where the candidate places came from (Google vs bundled demo). */
   placesSource: PlacesResult['source'] | null;
   /** Provenance of the ranking (on-device Gemma vs deterministic fallback). */
@@ -56,6 +61,7 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
   const [status, setStatus] = useState<OpportunitiesState['status']>('idle');
   const [loadingDetail, setLoadingDetail] = useState<string | null>(null);
   const [ranked, setRanked] = useState<RankedOpportunity[]>([]);
+  const [readyAt, setReadyAt] = useState<number | null>(null);
   const [placesSource, setPlacesSource] = useState<PlacesResult['source'] | null>(null);
   const [rankMeta, setRankMeta] = useState<InferenceMeta | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -88,6 +94,7 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
       setRankMeta(meta);
       setSelectedId(data[0]?.id ?? null);
       setLoadingDetail(null);
+      setReadyAt(Date.now());
       setStatus('ready');
     } catch {
       // Last-resort safety net: deterministic ranking over profile-derived
@@ -104,6 +111,7 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
       setRankMeta(null);
       setSelectedId(fallback[0]?.id ?? null);
       setLoadingDetail(null);
+      setReadyAt(Date.now());
       setStatus('ready');
     }
   }, []);
@@ -114,14 +122,15 @@ export function OpportunitiesProvider({ children }: { children: React.ReactNode 
     setStatus('idle');
     setLoadingDetail(null);
     setRanked([]);
+    setReadyAt(null);
     setPlacesSource(null);
     setRankMeta(null);
     setSelectedId(null);
   }, []);
 
   const value = useMemo(
-    () => ({ status, loadingDetail, ranked, placesSource, rankMeta, selectedId, load, select, reset }),
-    [status, loadingDetail, ranked, placesSource, rankMeta, selectedId, load, select, reset],
+    () => ({ status, loadingDetail, ranked, readyAt, placesSource, rankMeta, selectedId, load, select, reset }),
+    [status, loadingDetail, ranked, readyAt, placesSource, rankMeta, selectedId, load, select, reset],
   );
 
   return <OpportunitiesContext.Provider value={value}>{children}</OpportunitiesContext.Provider>;
