@@ -10,13 +10,21 @@
  * about those candidates privately. Keep that boundary intact.
  */
 
-export type OpportunityCategory = 'partnership' | 'lunch' | 'catering' | 'event';
+/**
+ * Opportunity categories are keyed by the SHAPE of the revenue, not by any one
+ * industry, so they hold for a taco truck and a mobile detailer alike:
+ *   • recurring   — standing accounts/contracts (fleets, offices, property mgrs)
+ *   • partnership — venues/orgs to co-serve or co-market with
+ *   • event       — gatherings with high volume in a short window
+ *   • direct      — high-traffic spots to serve individuals on the spot
+ */
+export type OpportunityCategory = 'recurring' | 'partnership' | 'event' | 'direct';
 
 export const OPPORTUNITY_CATEGORIES: readonly OpportunityCategory[] = [
+  'recurring',
   'partnership',
-  'lunch',
-  'catering',
   'event',
+  'direct',
 ] as const;
 
 export type OutreachChannel = 'email' | 'phone' | 'walk-in';
@@ -156,20 +164,30 @@ export interface BusinessAnalysis {
   targetSegments: CustomerSegment[];
 }
 
-/** One ranked, reasoned opportunity. Surfaced to the UI; no chain-of-thought. */
+/**
+ * One ranked, reasoned opportunity. Surfaced to the UI; no chain-of-thought —
+ * instead a simple, transparent trail: WHY it fits (`reasons`), WHAT that rests
+ * on (`evidence` — only facts present in the candidate/profile data), what
+ * could go wrong (`risks`), and how sure Scout is (`confidence`).
+ */
 export interface RankedOpportunity {
   id: string;
   name: string;
   category: OpportunityCategory;
-  /** 0–100. */
+  /** 0–100 — how strong the opportunity is. */
   score: number;
+  /** 0–100 — how sure the reasoning is, given the data it had. */
+  confidence: number;
   latitude: number;
   longitude: number;
   address: string;
   distanceMiles: number;
   bestTime: string;
   summary: string;
+  /** Why it fits — the argument. */
   reasons: string[];
+  /** The observable data points the argument rests on — never invented. */
+  evidence: string[];
   risks: string[];
   recommendedAction: string;
   estimatedValue?: string;

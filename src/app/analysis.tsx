@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { Redirect, useRouter } from 'expo-router';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
@@ -7,7 +7,6 @@ import { PrimaryButton } from '@/components/primary-button';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
-import { demoBusiness } from '@/data/demo';
 import { useTheme } from '@/hooks/use-theme';
 import {
   analyzeBusiness,
@@ -19,7 +18,7 @@ import {
   type OutreachChannel,
 } from '@/services/gemma';
 import { summarizeInterviewLocal } from '@/services/opportunityRanking';
-import { useInterview } from '@/state/interview-context';
+import { useBusiness } from '@/state/business-context';
 import { useOpportunities } from '@/state/opportunities-context';
 
 /**
@@ -56,13 +55,14 @@ const REACH_META: Record<OutreachChannel, { icon: string; label: string }> = {
 export default function AnalysisScreen() {
   const router = useRouter();
   const theme = useTheme();
-  const { profile } = useInterview();
+  const { business, hydrated, interviewProfile, setAnalysis: cacheAnalysis } = useBusiness();
   const { load } = useOpportunities();
 
-  // Always have input: fall back to a demo profile on a deep-link / cold start.
-  const activeProfile = useMemo<InterviewProfile>(
-    () => profile ?? summarizeInterviewLocal([], demoBusiness),
-    [profile],
+  // The owner's business, with the interview's inferred customer when it ran.
+  const activeProfile = useMemo<InterviewProfile | null>(
+    () =>
+      interviewProfile ?? (business ? summarizeInterviewLocal([], business.profile) : null),
+    [interviewProfile, business],
   );
 
   const [stepIndex, setStepIndex] = useState(0);
@@ -70,21 +70,28 @@ export default function AnalysisScreen() {
   const [meta, setMeta] = useState<InferenceMeta | null>(null);
   const [revealCount, setRevealCount] = useState(0);
 
-  // 1. Kick off on-device reasoning once, and prime the ranking pipeline with the
-  //    real analysis so "who to look for" flows through to "where to go".
+  // 1. Kick off on-device reasoning once, prime the ranking pipeline with the
+  //    real analysis so "who to look for" flows through to "where to go", and
+  //    cache the analysis on-device so Home opens with a real mission next time.
+  const startedRef = useRef(false);
   useEffect(() => {
+    // Run exactly once per visit — caching the analysis updates the business
+    // record, which must not re-trigger a fresh analysis.
+    if (!activeProfile || startedRef.current) return;
+    startedRef.current = true;
     let cancelled = false;
     (async () => {
       const res = await analyzeBusiness(activeProfile);
       if (cancelled) return;
       setAnalysis(res.data);
       setMeta(res.meta);
+      cacheAnalysis(res.data);
       void load(activeProfile, res.data);
     })();
     return () => {
       cancelled = true;
     };
-  }, [activeProfile, load]);
+  }, [activeProfile, load, cacheAnalysis]);
 
   // 2. Advance the animated step checklist on a gentle cadence.
   useEffect(() => {
@@ -109,6 +116,9 @@ export default function AnalysisScreen() {
   }, [revealing, revealCount, segments.length]);
 
   const allRevealed = revealing && revealCount >= segments.length;
+
+  // Nothing to analyze until the owner has set up their business.
+  if (hydrated && !business) return <Redirect href="/profile" />;
 
   if (!revealing) {
     return (

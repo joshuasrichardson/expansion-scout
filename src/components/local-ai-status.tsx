@@ -3,7 +3,7 @@
  *
  * Shows — live — whether Gemma is answering on this device, which model, and how
  * fast. The "Run sample reasoning" button executes the real analyze → rank flow
- * against the demo taco truck and reports the `InferenceMeta` (source, latency,
+ * against the owner's stored business and reports the `InferenceMeta` (source, latency,
  * validated, coverage note) so a judge can *see* that reasoning ran locally.
  *
  * Brand (CLAUDE.md): blue = AI-reasoning accent; forest green = primary; the
@@ -17,7 +17,6 @@ import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
-import { demoBusiness } from '@/data/demo';
 import { useTheme } from '@/hooks/use-theme';
 import {
   analyzeBusiness,
@@ -35,6 +34,7 @@ import {
   type DownloadProgress,
 } from '@/services/modelManager';
 import { getPlaceCandidates, type PlacesResult } from '@/services/places';
+import { useBusiness } from '@/state/business-context';
 
 type SampleRun = {
   meta: InferenceMeta;
@@ -46,6 +46,7 @@ type SampleRun = {
 
 export function LocalAiStatus() {
   const theme = useTheme();
+  const { business } = useBusiness();
   const isNative = Platform.OS !== 'web';
   const [status, setStatus] = useState<GemmaStatus | null>(null);
   const [running, setRunning] = useState(false);
@@ -90,13 +91,16 @@ export function LocalAiStatus() {
   }, [refresh]);
 
   const runSample = useCallback(async () => {
+    const profile = business?.profile;
+    if (!profile) return;
     setRunning(true);
     setSample(null);
     try {
-      // Google discovers, Gemma reasons — exercise the real path end to end.
-      const places = await getPlaceCandidates(demoBusiness);
-      const analysis = await analyzeBusiness(demoBusiness);
-      const ranked = await rankOpportunities(demoBusiness, analysis.data, places.candidates);
+      // Google discovers, Gemma reasons — exercise the real path end to end
+      // against the owner's actual business.
+      const analysis = await analyzeBusiness(profile);
+      const places = await getPlaceCandidates(profile, analysis.data);
+      const ranked = await rankOpportunities(profile, analysis.data, places.candidates);
       const top = ranked.data[0];
       if (top) {
         setSample({
@@ -111,7 +115,7 @@ export function LocalAiStatus() {
     } finally {
       setRunning(false);
     }
-  }, [refresh]);
+  }, [refresh, business]);
 
   const onDevice = status?.onDevice ?? false;
   const dotColor = onDevice ? theme.success : theme.warning;
@@ -190,9 +194,15 @@ export function LocalAiStatus() {
       )}
 
       <PrimaryButton
-        label={running ? 'Reasoning on-device…' : 'Run sample reasoning'}
+        label={
+          !business
+            ? 'Set up your business to run a sample'
+            : running
+              ? 'Reasoning on-device…'
+              : 'Run sample reasoning on your business'
+        }
         variant="primary"
-        disabled={running}
+        disabled={running || !business}
         onPress={runSample}
         icon={running ? <ActivityIndicator color={theme.onAccent} /> : undefined}
       />
@@ -209,7 +219,7 @@ export function LocalAiStatus() {
           <ThemedText type="caption" themeColor="textMuted">
             {sample.placesSource === 'live'
               ? `${sample.candidateCount} places discovered via Google Places`
-              : `${sample.candidateCount} demo places (no Places key)`}
+              : `${sample.candidateCount} targets derived from your profile (no Places key)`}
           </ThemedText>
 
           <ThemedText type="smallBold">Today&apos;s focus</ThemedText>

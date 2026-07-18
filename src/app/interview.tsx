@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { Redirect, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
 
@@ -7,9 +7,7 @@ import { PrimaryButton } from '@/components/primary-button';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
-import { demoBusiness } from '@/data/demo';
 import { useTheme } from '@/hooks/use-theme';
-import { SEED_QUESTION } from '@/mockData';
 import {
   interviewStep,
   MAX_QUESTIONS,
@@ -17,10 +15,19 @@ import {
   summarizeInterview,
   type InterviewTurn,
 } from '@/services/gemma';
-import { useInterview } from '@/state/interview-context';
+import { useBusiness } from '@/state/business-context';
 
 type Phase = 'asking' | 'thinking' | 'finishing';
 type Prompt = { question: string; placeholder: string };
+
+/**
+ * The opening question — shown immediately (no cold-start wait) before Gemma
+ * takes over and adaptively decides what, if anything, to ask next.
+ */
+const SEED_QUESTION: Prompt = {
+  question: 'What product or service do you most want to grow right now?',
+  placeholder: 'e.g. recurring commercial accounts, weekend bookings',
+};
 
 /** Shown if Gemma wants to stop before the minimum — keeps the interview useful. */
 const EARLY_GAP: Prompt = {
@@ -31,16 +38,19 @@ const EARLY_GAP: Prompt = {
 export default function InterviewScreen() {
   const router = useRouter();
   const theme = useTheme();
-  const { setResult } = useInterview();
+  const { business, hydrated, completeInterview } = useBusiness();
 
   const [history, setHistory] = useState<InterviewTurn[]>([]);
   const [current, setCurrent] = useState<Prompt>({ ...SEED_QUESTION });
   const [draft, setDraft] = useState('');
   const [phase, setPhase] = useState<Phase>('asking');
 
+  // The interview refines the owner's stored business — it needs one to exist.
+  if (hydrated && !business) return <Redirect href="/profile" />;
+
   async function handleNext() {
     const answer = draft.trim();
-    if (!answer || phase !== 'asking') return;
+    if (!answer || phase !== 'asking' || !business) return;
 
     const nextHistory = [...history, { question: current.question, answer }];
     setHistory(nextHistory);
@@ -56,8 +66,8 @@ export default function InterviewScreen() {
 
     if (shouldStop) {
       setPhase('finishing');
-      const { data: profile } = await summarizeInterview(nextHistory, demoBusiness);
-      setResult(profile, nextHistory);
+      const { data: profile } = await summarizeInterview(nextHistory, business.profile);
+      completeInterview(profile);
       router.push('/analysis');
       return;
     }

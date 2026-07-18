@@ -325,7 +325,7 @@ export async function rankOpportunities(
   let latencyMs = 0;
   try {
     const { text, latencyMs: ms } = await transport.generate(RANK_PROMPT(profile, analysis, candidates), {
-      maxTokens: 900,
+      maxTokens: 1600, // room for reasons + evidence + confidence per candidate
       temperature: 0.3, // lower temp ⇒ more reliable JSON from the small model
     });
     latencyMs = ms;
@@ -439,10 +439,10 @@ export function coerceCategory(v: unknown): OpportunityCategory | null {
   const s = v.toLowerCase();
   const exact = OPPORTUNITY_CATEGORIES.find((c) => c === s);
   if (exact) return exact;
-  if (/cater/.test(s)) return 'catering';
-  if (/partner|collab|venue|brewery|apartment/.test(s)) return 'partnership';
-  if (/event|festival|market|game|sport/.test(s)) return 'event';
-  if (/lunch|office|weekday|rush/.test(s)) return 'lunch';
+  if (/recur|contract|account|standing|fleet|cater|subscription|retainer|b2b/.test(s)) return 'recurring';
+  if (/partner|collab|venue|referr|co-?market|brewery|apartment|salon|gym/.test(s)) return 'partnership';
+  if (/event|festival|market|tournament|game|sport|fair|expo/.test(s)) return 'event';
+  if (/direct|walk-?up|foot|traffic|lunch|office|weekday|rush|retail|consumer/.test(s)) return 'direct';
   return null;
 }
 
@@ -496,7 +496,7 @@ export function validateAnalysis(raw: unknown): BusinessAnalysis {
     .filter((c): c is OpportunityCategory => c !== null);
   const recommendedCategories: OpportunityCategory[] = recommended.length
     ? dedupe(recommended)
-    : ['catering', 'partnership'];
+    : ['recurring', 'partnership'];
   return {
     summary,
     focus,
@@ -610,15 +610,23 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
       const category = coerceCategory(o.category) ?? source.category;
       const reasons = asStringArray(o.reasons, 3);
       if (!reasons.length) return null; // a ranking with no reasoning is worthless
+      // Evidence must be verifiable: keep the model's lines only when they echo
+      // the grounding we gave it; always anchor with the known facts.
+      const evidence = dedupe([
+        ...groundedEvidence(asStringArray(o.evidence, 3), source),
+        ...factEvidence(source),
+      ]).slice(0, 3);
       const result: RankedOpportunity = {
         id: source.id,
         name: source.name,
         category,
         score: clampScore(o.score),
+        confidence: clampScore(o.confidence ?? 65),
         latitude: source.latitude,
         longitude: source.longitude,
         address: source.address,
         distanceMiles: source.distanceMiles,
+        evidence,
         bestTime: typeof o.bestTime === 'string' && o.bestTime.trim() ? o.bestTime.trim() : 'Flexible',
         summary: typeof o.summary === 'string' ? o.summary.trim() : `${source.name} — ${category}`,
         reasons,
@@ -636,6 +644,31 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
 
   // May be empty (model grounded nothing) — the caller merges/backfills.
   return ranked;
+}
+
+/**
+ * Grounding guard for evidence lines: keep a model-written line only when it
+ * overlaps the data we actually gave the model about this candidate. This is
+ * what lets the UI present "backed by" facts without trusting free generation.
+ */
+function groundedEvidence(lines: string[], source: PlaceCandidate): string[] {
+  const grounding = `${source.name} ${source.context ?? ''} ${source.category} ${source.address}`
+    .toLowerCase();
+  return lines.filter((line) => {
+    const words = line.toLowerCase().match(/[a-z]{5,}/g) ?? [];
+    return words.some((w) => grounding.includes(w));
+  });
+}
+
+/** The always-true facts about a candidate, as evidence lines. */
+function factEvidence(source: PlaceCandidate): string[] {
+  const facts = [`${source.distanceMiles.toFixed(1)} mi from you`];
+  if (source.context) facts.push(capitalizeFirst(source.context));
+  return facts;
+}
+
+function capitalizeFirst(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export function validateOutreach(
@@ -677,18 +710,23 @@ const CUSTOMER_TAXONOMY = [
 function ANALYZE_PROMPT(p: BusinessProfileInput | InterviewProfile): string {
   const customer = 'customer' in p ? p.customer : undefined;
   return [
-    'You are an experienced local-business growth consultant.',
+    `You are an experienced growth consultant who has helped many businesses like this one. Think like an owner-operator: concrete places, real buyers, this week.`,
     `Business: ${p.name}, a ${p.type} in ${p.city}. Serves within ${p.serviceRadiusMiles} miles.`,
     p.availability ? `Availability: ${p.availability}.` : '',
-    `Goals: ${p.goals.join('; ') || 'grow revenue'}.`,
-    `Capabilities: ${p.capabilities.join('; ') || 'core service'}.`,
-    customer ? `Ideal customer so far: ${customer.description}. Gathers at: ${customer.locations.join(', ')}.` : '',
-    'Analyze where this business should focus to grow.',
-    'Then decide WHAT KINDS OF CUSTOMERS to look for. Classify each into exactly one type from this taxonomy, and give its discovery method (how to FIND them) and reach channel (how to CONTACT them):',
+    `Owner's goals: ${p.goals.join('; ') || 'grow revenue'}.`,
+    `What they're great at: ${p.capabilities.join('; ') || 'core service'}.`,
+    customer
+      ? `Ideal customer so far: ${customer.description}. Buying signals: ${customer.signals.join('; ')}. Gathers at: ${customer.locations.join(', ')}.`
+      : '',
+    `Analyze where a ${p.type} with these strengths should focus to hit these goals. "focus" must be ONE concrete mission for today, stated as an outcome (e.g. "Pitch three property managers a standing weekly slot"), not a platitude.`,
+    'Then decide WHAT KINDS OF CUSTOMERS to look for. Every segment must be specific to a ' +
+      p.type +
+      " — name the kind of place or buyer, why they need THIS service, and why they'd pay repeatedly. Classify each into exactly one type from this taxonomy, and give its discovery method (how to FIND them) and reach channel (how to CONTACT them):",
     CUSTOMER_TAXONOMY,
-    'Return 3–5 target segments, best-first, grounded in this business — never generic.',
-    '"type" is one of: physical-business|residential-community|event-venue|public-gathering|partner-org. "reach" is one of: walk-in|phone|email. "category" is one of: partnership|lunch|catering|event. Keep every string under 14 words.',
-    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("partnership"|"lunch"|"catering"|"event")[],"targetSegments":[{"label":string,"type":string,"whoTheyAre":string,"discovery":string,"reach":string,"why":string,"category":string}]}',
+    'Return 3–5 target segments, best-first. Rank segments that serve the owner\'s stated goals highest (recurring goals ⇒ recurring segments first).',
+    'Category meanings: recurring = standing accounts/contracts; partnership = venues/orgs to co-serve or co-market with; event = high-volume gatherings; direct = high-traffic spots to serve individuals.',
+    '"type" is one of: physical-business|residential-community|event-venue|public-gathering|partner-org. "reach" is one of: walk-in|phone|email. "category" is one of: recurring|partnership|event|direct. Keep every string under 14 words.',
+    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("recurring"|"partnership"|"event"|"direct")[],"targetSegments":[{"label":string,"type":string,"whoTheyAre":string,"discovery":string,"reach":string,"why":string,"category":string}]}',
     JSON_RULES,
   ]
     .filter(Boolean)
@@ -752,12 +790,13 @@ function RANK_PROMPT(
     context: c.context ?? '',
   }));
   return [
-    'You are a local-business growth consultant ranking nearby opportunities.',
-    `Business: ${p.name} (${p.type}) in ${p.city}. Focus: ${a.focus}.`,
+    `You are a growth consultant ranking nearby opportunities for a ${p.type}. Think like an operator: who is the buyer at each place, what exactly do they buy, how does the first sale happen.`,
+    `Business: ${p.name} (${p.type}) in ${p.city}. Today's focus: ${a.focus}.`,
+    `Owner's goals: ${p.goals.join('; ') || 'grow revenue'}. Great at: ${p.capabilities.join('; ') || 'core service'}.`,
     `Candidates (JSON): ${JSON.stringify(list)}`,
-    `Output EXACTLY ${candidates.length} objects — one for every id: [${candidates.map((c) => c.id).join(', ')}]. Omitting any id is an error. Order them best-first. Use ONLY the given id/category — never invent places.`,
-    'For each: score 0–100, "bestTime", a one-line "summary", TWO short "reasons", ONE "risk", one "recommendedAction", and an "estimatedValue". Keep every string under 14 words.',
-    'JSON shape: {"opportunities":[{"id":string,"category":string,"score":number,"bestTime":string,"summary":string,"reasons":string[2],"risks":string[1],"recommendedAction":string,"estimatedValue":string}]}',
+    `Output EXACTLY ${candidates.length} objects — one for every id: [${candidates.map((c) => c.id).join(', ')}]. Omitting any id is an error. Order them best-first — candidates that serve the owner's goals rank higher. Use ONLY the given id/category — never invent places.`,
+    'For each: score 0–100; "confidence" 0–100 (how sure you are given the data — be honest, lower it when the context is thin); "bestTime" (day + time window when the buyer is reachable); a one-line "summary" naming WHO buys and WHAT they buy; TWO short "reasons" (why it fits THIS business and its goals); TWO "evidence" lines quoting only facts from the candidate data above (distance, context) — never invented numbers; ONE "risk"; one "recommendedAction" that is a first move an owner could do TODAY — name the person to ask for and the specific offer to lead with (e.g. "Ask the fleet manager; offer one free demo on their dirtiest van"); and "estimatedValue" as a conservative dollar range with a period (e.g. "$300–600/mo"). Keep every string under 16 words.',
+    'JSON shape: {"opportunities":[{"id":string,"category":string,"score":number,"confidence":number,"bestTime":string,"summary":string,"reasons":string[2],"evidence":string[2],"risks":string[1],"recommendedAction":string,"estimatedValue":string}]}',
     JSON_RULES,
   ].join('\n');
 }
@@ -768,11 +807,17 @@ function OUTREACH_PROMPT(
   channel: OutreachChannel,
   tone: OutreachTone,
 ): string {
+  const format =
+    channel === 'email'
+      ? 'a short email (under 120 words): specific subject, one-line who-we-are, the concrete offer, one low-friction ask with a day/time.'
+      : channel === 'phone'
+        ? 'a 30-second call script: intro line, the concrete offer, one question to land a specific next step.'
+        : 'a natural in-person opener (2–4 sentences): who you are, the concrete offer, and the ask.';
   return [
-    `You are drafting a ${tone} ${channel} outreach message for a local business owner.`,
-    `From: ${p.name}, a ${p.type} in ${p.city}.`,
-    `To: ${o.name} (${o.category}). Goal: ${o.recommendedAction}`,
-    'Keep it short and human. Use ONLY facts given above — do not invent names, numbers, or offers.',
+    `You are drafting a ${tone} ${channel} outreach message for a local business owner. Write ${format}`,
+    `From: ${p.name}, a ${p.type} in ${p.city}.${p.capabilities[0] ? ` Their edge: ${p.capabilities[0]}.` : ''}`,
+    `To: ${o.name} (${o.category}). The move: ${o.recommendedAction}`,
+    'Lead with what THEY get, not what you want. Make the ask easy to say yes to (a free sample/demo/trial beats a contract). Use ONLY facts given above — do not invent names, numbers, discounts, or offers.',
     channel === 'email'
       ? 'JSON shape: {"subject":string,"body":string}'
       : 'JSON shape: {"body":string}',

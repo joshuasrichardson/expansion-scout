@@ -8,23 +8,24 @@
  * else, including Gemma, sees it.
  *
  * Resilience is a feature (CLAUDE.md): with **no API key** — or on any network /
- * parse error — this degrades to the bundled `demoCandidates`, so the whole flow
- * still runs offline. `getPlaceCandidates` never throws to its callers.
+ * parse error — this degrades to targets *derived from the owner's own profile*
+ * (services/localCandidates.ts), so the whole flow still runs offline and stays
+ * centered on their business. `getPlaceCandidates` never throws to its callers.
  *
  * Uses the **new Places API (v1)** Text Search endpoint
  * (`POST /v1/places:searchText`), which lets us issue one semantic query per
  * opportunity category, biased to a circle around the owner's location.
  */
 
-import { demoCandidates } from '@/data/demo';
-
 import { coerceCategory } from './gemma';
 import {
   OPPORTUNITY_CATEGORIES,
+  type BusinessAnalysis,
   type BusinessProfileInput,
   type OpportunityCategory,
   type PlaceCandidate,
 } from './gemmaTypes';
+import { synthesizeCandidates } from './localCandidates';
 
 /* -------------------------------------------------------------------------- */
 /* Config                                                                     */
@@ -48,23 +49,68 @@ export const PlacesConfig = {
   },
   /** Per-request ceiling. Text Search is fast; keep this tight so it never hangs. */
   timeoutMs: Number(process.env.EXPO_PUBLIC_GOOGLE_PLACES_TIMEOUT_MS ?? 8000),
-  /** Results returned to the caller after dedupe + distance sort. */
-  maxResults: Number(process.env.EXPO_PUBLIC_GOOGLE_PLACES_MAX_RESULTS ?? 10),
+  /**
+   * Results returned to the caller after dedupe + distance sort. Kept small
+   * enough that an on-device model can rank ALL of them with full reasoning
+   * (reasons + evidence + confidence per item) inside one bounded generation.
+   */
+  maxResults: Number(process.env.EXPO_PUBLIC_GOOGLE_PLACES_MAX_RESULTS ?? 6),
   /** How many hits to take from each per-category query before merging. */
   maxPerCategory: 4,
 } as const;
 
 /**
- * One semantic Text Search query per opportunity category, tuned for the taco
- * truck persona. The category we searched under is what the resulting candidate
- * is tagged with (Google's own `types` are a fallback via `coerceCategory`).
+ * Default semantic Text Search query per opportunity category. When Gemma has
+ * analyzed the business, its target segments override these with sharper,
+ * business-specific queries (see `queriesFor`). The category we searched under
+ * is what the resulting candidate is tagged with (Google's own `types` are a
+ * fallback via `coerceCategory`).
  */
 const CATEGORY_QUERIES: Record<OpportunityCategory, string> = {
-  lunch: 'office park or corporate campus',
-  partnership: 'brewery or taproom or apartment complex',
-  catering: 'corporate event venue or conference center',
-  event: 'sports complex or recreation center or event venue',
+  recurring: 'office park or car dealership or property management company',
+  partnership: 'busy local business or apartment complex',
+  event: 'sports complex or event venue or farmers market',
+  direct: 'busy shopping center or plaza',
 };
+
+/**
+ * One (category, query) pair per search. Priority: Gemma's target segments
+ * (sharpest — written for THIS business) → the customer hangouts the owner
+ * named in the interview → generic category defaults.
+ */
+function queriesFor(
+  profile: BusinessProfileInput,
+  analysis?: BusinessAnalysis,
+): { category: OpportunityCategory; query: string }[] {
+  const segments = analysis?.targetSegments ?? [];
+  const fromSegments = segments
+    .map((s) => ({ category: s.category, query: stripSearchVerbs(s.discovery) || s.label }))
+    .filter((q) => q.query.trim().length > 3)
+    .slice(0, 4);
+  if (fromSegments.length >= 2) return fromSegments;
+
+  const categories = analysis?.recommendedCategories?.length
+    ? analysis.recommendedCategories
+    : [...OPPORTUNITY_CATEGORIES];
+
+  const customer = 'customer' in profile ? (profile as { customer?: { locations?: string[] } }).customer : undefined;
+  const fromLocations = (customer?.locations ?? [])
+    .filter((l) => l.trim().length > 3)
+    .slice(0, 4)
+    .map((query, i) => ({ category: categories[i % categories.length], query }));
+  if (fromLocations.length >= 2) return fromLocations;
+
+  return categories.map((category) => ({ category, query: CATEGORY_QUERIES[category] }));
+}
+
+/** "Search Maps for office parks nearby" → "office parks" (better text query). */
+function stripSearchVerbs(discovery: string): string {
+  return discovery
+    .replace(/^(search|check|look|browse|find)\b[^]*?\bfor\b/i, '')
+    .replace(/\b(on|via|using)\s+(google\s*)?maps\b/gi, '')
+    .replace(/\b(nearby|near you|in your (radius|area))\b\.?$/i, '')
+    .trim();
+}
 
 /* -------------------------------------------------------------------------- */
 /* Public result type                                                         */
@@ -73,12 +119,12 @@ const CATEGORY_QUERIES: Record<OpportunityCategory, string> = {
 /**
  * Discovery provenance — deliberately NOT the reasoning-layer `InferenceMeta`.
  * Places *discovers*; it doesn't reason. `source` lets the UI honestly badge
- * "found via Google" vs "demo data", keeping the two layers distinct.
+ * "found via Google" vs "derived from your profile", keeping the layers distinct.
  */
 export interface PlacesResult {
   candidates: PlaceCandidate[];
-  source: 'live' | 'demo';
-  /** Human-readable reason we used demo data, when we did. */
+  source: 'live' | 'derived';
+  /** Human-readable reason we derived targets locally, when we did. */
   note?: string;
 }
 
@@ -128,12 +174,17 @@ async function searchTextLive(query: string, profile: BusinessProfileInput): Pro
       body: JSON.stringify({
         textQuery: query,
         maxResultCount: PlacesConfig.maxPerCategory,
-        locationBias: {
-          circle: {
-            center: { latitude: profile.latitude, longitude: profile.longitude },
-            radius,
-          },
-        },
+        // No bias when the profile has no resolved location yet (e.g. geocoding).
+        ...(radius > 0
+          ? {
+              locationBias: {
+                circle: {
+                  center: { latitude: profile.latitude, longitude: profile.longitude },
+                  radius,
+                },
+              },
+            }
+          : {}),
       }),
     });
     if (!res.ok) throw new Error(`Places HTTP ${res.status}`);
@@ -212,24 +263,28 @@ export function normalizePlace(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Discover candidate places for a business. Runs one Text Search per category,
- * normalizes, de-dupes by id, sorts by distance, and caps. Degrades to the
- * bundled demo candidates when there's no key or on any error — never throws.
+ * Discover candidate places for a business. Runs one Text Search per target
+ * (segment-driven when Gemma has analyzed the business), normalizes, de-dupes
+ * by id, sorts by distance, and caps. Degrades to targets synthesized from the
+ * owner's own profile when there's no key or on any error — never throws.
  */
-export async function getPlaceCandidates(profile: BusinessProfileInput): Promise<PlacesResult> {
+export async function getPlaceCandidates(
+  profile: BusinessProfileInput,
+  analysis?: BusinessAnalysis,
+): Promise<PlacesResult> {
   if (!PlacesConfig.enabled) {
     return {
-      candidates: demoCandidates,
-      source: 'demo',
-      note: 'No Google Places key configured; using bundled demo candidates.',
+      candidates: synthesizeCandidates(profile, analysis),
+      source: 'derived',
+      note: 'No Google Places key configured; targets derived from your profile.',
     };
   }
 
   try {
-    // One query per category, in parallel; a single failure can't sink the batch.
+    // One query per target, in parallel; a single failure can't sink the batch.
     const settled = await Promise.allSettled(
-      OPPORTUNITY_CATEGORIES.map(async (category) => {
-        const places = await searchText(CATEGORY_QUERIES[category], profile);
+      queriesFor(profile, analysis).map(async ({ category, query }) => {
+        const places = await searchText(query, profile);
         return places
           .map((p) => normalizePlace(p, category, profile))
           .filter((c): c is PlaceCandidate => c !== null);
@@ -250,19 +305,47 @@ export async function getPlaceCandidates(profile: BusinessProfileInput): Promise
 
     if (!candidates.length) {
       return {
-        candidates: demoCandidates,
-        source: 'demo',
-        note: 'Places returned no usable candidates; using demo data.',
+        candidates: synthesizeCandidates(profile, analysis),
+        source: 'derived',
+        note: 'Places returned no usable results; targets derived from your profile.',
       };
     }
 
     return { candidates, source: 'live' };
   } catch (err) {
     return {
-      candidates: demoCandidates,
-      source: 'demo',
-      note: `Places discovery failed (${describeError(err)}); using demo data.`,
+      candidates: synthesizeCandidates(profile, analysis),
+      source: 'derived',
+      note: `Places discovery failed (${describeError(err)}); targets derived from your profile.`,
     };
+  }
+}
+
+/**
+ * Best-effort city → coordinates via the same Text Search endpoint. Returns
+ * null without a key or on any failure — callers treat location as optional.
+ */
+export async function geocodeCity(
+  city: string,
+): Promise<{ latitude: number; longitude: number } | null> {
+  if (!PlacesConfig.enabled || !city.trim()) return null;
+  try {
+    const results = await searchText(city.trim(), {
+      name: '',
+      type: '',
+      city,
+      latitude: 0,
+      longitude: 0,
+      serviceRadiusMiles: 0,
+      goals: [],
+      capabilities: [],
+    });
+    const loc = results[0]?.location;
+    return typeof loc?.latitude === 'number' && typeof loc?.longitude === 'number'
+      ? { latitude: loc.latitude, longitude: loc.longitude }
+      : null;
+  } catch {
+    return null;
   }
 }
 
