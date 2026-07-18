@@ -1,5 +1,6 @@
 import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Card } from '@/components/card';
 import { Logo } from '@/components/logo';
@@ -19,13 +20,14 @@ import { useBusiness } from '@/state/business-context';
 export default function HomeScreen() {
   const router = useRouter();
   const theme = useTheme();
+  const insets = useSafeAreaInsets();
   const { business, hydrated } = useBusiness();
 
   const profile = business?.profile;
   const analysis = business?.analysis;
 
   return (
-    <Screen>
+    <Screen contentStyle={{ paddingTop: insets.top + Spacing.four }}>
       <View style={styles.top}>
         <Logo variant="mark" width={48} />
         <Pressable
