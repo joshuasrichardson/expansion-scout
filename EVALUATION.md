@@ -78,10 +78,13 @@ profiles (taco truck, mobile detailer, mobile pet groomer):
   falls back deterministically if it ever recurs.
 - **Cold start.** The first inference loads the model (~14 s). We warm up at launch;
   the analysis "thinking" screen also masks first-call latency.
-- **Transport is dev vs. production.** The eval and dev app reach Gemma via a local
-  Ollama HTTP runtime (real on-device inference on the host machine, works in the
-  iOS Simulator and in airplane mode on that machine). For a phone binary that runs
-  Gemma *inside the app process*, `GemmaTransport` is swappable for an embedded
-  runtime (llama.rn / MediaPipe LLM Inference) with no change to callers — that is
-  the true-on-device production path and the remaining work for full §4 credit on a
-  physical device.
+- **Two transports, one interface.** `GemmaTransport` has two real implementations:
+  the **embedded llama.rn** runtime (Gemma runs inside the app process on the phone's
+  GPU — the true on-device path) and the **Ollama HTTP** runtime (dev/simulator; what
+  this eval measures). Selection is automatic. The embedded path is implemented and
+  typechecked; because iOS on-device inference can't run in the Simulator or in CI,
+  its end-to-end + airplane-mode verification is a hands-on step on a physical iPhone
+  with a dev build — see **ON_DEVICE.md**. The numbers above are from the Ollama
+  transport against the same model class, prompts, and validation, so they're a
+  faithful proxy for the reasoning quality; on-device latency will differ with the
+  phone's GPU.

@@ -4,14 +4,16 @@ import { StatusBar } from 'expo-status-bar';
 import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { InterviewProvider } from '@/state/interview-context';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <StatusBar style="auto" />
-      <Stack>
+      <InterviewProvider>
+        <AnimatedSplashOverlay />
+        <StatusBar style="auto" />
+        <Stack>
         <Stack.Screen name="index" options={{ title: 'Expansion Scout' }} />
         <Stack.Screen name="daily-mission" options={{ title: 'Daily Mission' }} />
         <Stack.Screen name="interview" options={{ title: 'AI Interview' }} />
@@ -20,8 +22,9 @@ export default function RootLayout() {
         <Stack.Screen name="opportunity/[id]" options={{ title: 'Opportunity' }} />
         <Stack.Screen name="outreach" options={{ title: 'Outreach' }} />
         <Stack.Screen name="plan" options={{ title: "Today's Plan" }} />
-        <Stack.Screen name="design-system" options={{ title: 'Design System' }} />
-      </Stack>
+          <Stack.Screen name="design-system" options={{ title: 'Design System' }} />
+        </Stack>
+      </InterviewProvider>
     </ThemeProvider>
   );
 }

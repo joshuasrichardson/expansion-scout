@@ -10,15 +10,20 @@
  * answered except by reading `InferenceMeta.source`.
  */
 
-import type {
-  BusinessAnalysis,
-  BusinessProfileInput,
-  OpportunityCategory,
-  OutreachChannel,
-  OutreachDraft,
-  OutreachTone,
-  PlaceCandidate,
-  RankedOpportunity,
+import {
+  MIN_QUESTIONS,
+  type BusinessAnalysis,
+  type BusinessProfileInput,
+  type CustomerProfile,
+  type InterviewDecision,
+  type InterviewProfile,
+  type InterviewTurn,
+  type OpportunityCategory,
+  type OutreachChannel,
+  type OutreachDraft,
+  type OutreachTone,
+  type PlaceCandidate,
+  type RankedOpportunity,
 } from './gemmaTypes';
 
 /** Relative weight per category — recurring, high-value work ranks higher. */
@@ -42,6 +47,88 @@ const CATEGORY_VALUE: Record<OpportunityCategory, string> = {
   event: '~$500–1,200 per event',
   lunch: '~$200–400/wk',
 };
+
+/**
+ * A curated, ordered discovery script — the offline backbone of the adaptive
+ * interview. Each item covers a different slice of the customer-discovery lens,
+ * ordered so the earliest answers unlock the most search value.
+ */
+const INTERVIEW_SCRIPT: { question: string; placeholder: string }[] = [
+  {
+    question: 'Which type of customer buys the most from you today?',
+    placeholder: 'e.g. weekday office crowds, families at weekend events',
+  },
+  {
+    question: 'Where do those customers tend to gather — what kinds of places or events?',
+    placeholder: 'e.g. office parks, breweries, apartment complexes, tournaments',
+  },
+  {
+    question: 'When are you available to serve them?',
+    placeholder: 'e.g. weekdays 10a–8p, some Saturdays',
+  },
+  {
+    question: 'What has been holding you back from growing?',
+    placeholder: 'e.g. slow weekday afternoons, unsure which spots to target',
+  },
+];
+
+/**
+ * Deterministic interview loop: hand back the next unused scripted question, or
+ * stop once the script is exhausted or we've met the minimum. Mirrors what Gemma
+ * does, minus the adaptivity, so the flow never stalls offline.
+ */
+export function interviewStepLocal(history: InterviewTurn[]): InterviewDecision {
+  const next = INTERVIEW_SCRIPT[history.length - 1]; // history[0] is the seed opener
+  if (!next || history.length >= Math.max(MIN_QUESTIONS, INTERVIEW_SCRIPT.length)) {
+    return { done: true };
+  }
+  return { done: false, question: next.question, placeholder: next.placeholder };
+}
+
+/**
+ * Deterministic profile extraction: fold the free-text answers into the business
+ * fields and synthesize a reasonable customer picture over `base`. For the demo
+ * taco truck `base` is `demoBusiness`, so this always yields a non-empty profile.
+ */
+export function summarizeInterviewLocal(
+  history: InterviewTurn[],
+  base: BusinessProfileInput,
+): InterviewProfile {
+  const answers = history.map((t) => t.answer.trim()).filter(Boolean);
+  const [wants, who, where, when] = answers;
+
+  const description = wants ? `${base.name}: ${wants}` : base.description ?? `${base.type} in ${base.city}`;
+
+  const customer: CustomerProfile = {
+    description: who || `Local customers who need a ${base.type} in ${base.city}`,
+    signals: ['Nearby and easy to reach', 'Predictable, recurring demand'],
+    locations: splitLocations(where) ?? [
+      'Office parks',
+      'Breweries and taprooms',
+      'Apartment complexes',
+      'Weekend events and tournaments',
+    ],
+    outreach: ['Walk in and introduce yourself', 'Call or email the manager'],
+  };
+
+  return {
+    ...base,
+    description,
+    availability: when || base.availability,
+    goals: wants ? Array.from(new Set([wants, ...base.goals])).slice(0, 3) : base.goals,
+    customer,
+  };
+}
+
+/** Turn a free-text "where" answer into a few searchable place types. */
+function splitLocations(where?: string): string[] | null {
+  if (!where) return null;
+  const parts = where
+    .split(/[,;]|\band\b|\bor\b/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 2);
+  return parts.length ? parts.slice(0, 5) : null;
+}
 
 export function analyzeBusinessLocal(profile: BusinessProfileInput): BusinessAnalysis {
   const goal = profile.goals[0]?.toLowerCase() ?? '';

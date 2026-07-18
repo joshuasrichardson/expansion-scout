@@ -8,6 +8,7 @@
     "scheme": "expansionscout",
     "userInterfaceStyle": "automatic",
     "ios": {
+      "bundleIdentifier": "ai.halda.expansionscout",
       "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSAppTransportSecurity": {
@@ -37,6 +38,12 @@
           "backgroundColor": "#F5F4ED",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 160
+        }
+      ],
+      [
+        "llama.rn",
+        {
+          "enableEntitlements": true
         }
       ]
     ],

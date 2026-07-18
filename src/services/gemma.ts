@@ -22,16 +22,25 @@
  * risks, confidence, and recommended actions.
  */
 
+import { Platform } from 'react-native';
+
+import { LlamaTransport } from './llamaTransport';
 import {
   analyzeBusinessLocal,
   generateOutreachLocal,
+  interviewStepLocal,
   rankOpportunitiesLocal,
+  summarizeInterviewLocal,
 } from './opportunityRanking';
 import {
   OPPORTUNITY_CATEGORIES,
   type BusinessAnalysis,
   type BusinessProfileInput,
+  type CustomerProfile,
   type InferenceMeta,
+  type InterviewDecision,
+  type InterviewProfile,
+  type InterviewTurn,
   type OpportunityCategory,
   type OutreachChannel,
   type OutreachDraft,
@@ -133,8 +142,60 @@ export class OllamaTransport implements GemmaTransport {
   }
 }
 
+/**
+ * Tries transports in order and sticks with the first that's actually available.
+ * Used for `auto`: on device we prefer embedded llama.rn (true on-device) and
+ * fall back to Ollama (dev/simulator over LAN); a per-call failure re-resolves.
+ */
+class AutoTransport implements GemmaTransport {
+  private chosen: GemmaTransport | null = null;
+  constructor(private readonly candidates: GemmaTransport[]) {}
+
+  private async pick(): Promise<GemmaTransport | null> {
+    if (this.chosen) return this.chosen;
+    for (const c of this.candidates) {
+      const p = await c.probe();
+      if (p.available) {
+        this.chosen = c;
+        return c;
+      }
+    }
+    return null;
+  }
+
+  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+    const t = await this.pick();
+    if (!t) throw new Error('No on-device transport available');
+    try {
+      return await t.generate(prompt, opts);
+    } catch (err) {
+      this.chosen = null; // re-resolve next time (e.g. runtime went away)
+      throw err;
+    }
+  }
+
+  async probe() {
+    const t = await this.pick();
+    return t ? t.probe() : this.candidates[0].probe();
+  }
+}
+
+/**
+ * Choose the transport from `EXPO_PUBLIC_GEMMA_TRANSPORT`:
+ *   • `llama`  — force embedded llama.rn (device only)
+ *   • `ollama` — force the local HTTP runtime (dev/simulator)
+ *   • `auto` (default) — device: llama → ollama; web: ollama
+ */
+function resolveTransport(): GemmaTransport {
+  const choice = (process.env.EXPO_PUBLIC_GEMMA_TRANSPORT ?? 'auto').toLowerCase();
+  if (choice === 'llama') return new LlamaTransport();
+  if (choice === 'ollama') return new OllamaTransport();
+  const isNative = Platform.OS === 'ios' || Platform.OS === 'android';
+  return isNative ? new AutoTransport([new LlamaTransport(), new OllamaTransport()]) : new OllamaTransport();
+}
+
 /** Swap this to route all reasoning through a different runtime. */
-let transport: GemmaTransport = new OllamaTransport();
+let transport: GemmaTransport = resolveTransport();
 export function setGemmaTransport(next: GemmaTransport) {
   transport = next;
 }
@@ -199,6 +260,42 @@ export async function analyzeBusiness(
     (raw) => validateAnalysis(raw),
     () => analyzeBusinessLocal(profile),
     { maxTokens: 400 },
+  );
+}
+
+/**
+ * The adaptive-interview reasoning step. Given the conversation so far, Gemma
+ * decides whether it can already infer the business and its ideal customer well
+ * enough to run good place searches — and either returns the single most useful
+ * next question, or `done: true`. The caller (interview screen) enforces the
+ * MIN/MAX question bounds around this decision.
+ */
+export async function interviewStep(
+  history: InterviewTurn[],
+): Promise<WithMeta<InterviewDecision>> {
+  return run(
+    INTERVIEW_STEP_PROMPT(history),
+    (raw) => validateDecision(raw),
+    () => interviewStepLocal(history),
+    { maxTokens: 200, temperature: 0.4 },
+  );
+}
+
+/**
+ * Condense a completed interview into a structured profile: the business fields
+ * plus Gemma's inferred customer picture (who they are, how to recognize them,
+ * where they gather, how to reach them). Geo/name come from `base` — never the
+ * model — so coordinates can't be hallucinated.
+ */
+export async function summarizeInterview(
+  history: InterviewTurn[],
+  base: BusinessProfileInput,
+): Promise<WithMeta<InterviewProfile>> {
+  return run(
+    INTERVIEW_SUMMARY_PROMPT(history, base),
+    (raw) => validateProfile(raw, base),
+    () => summarizeInterviewLocal(history, base),
+    { maxTokens: 500, temperature: 0.3 },
   );
 }
 
@@ -368,6 +465,52 @@ export function validateAnalysis(raw: unknown): BusinessAnalysis {
   };
 }
 
+/** A safe next question when the model flags "not done" but omits one. */
+const FALLBACK_GAP_QUESTION =
+  'Where do your best customers tend to be — the kinds of places, neighborhoods, or events where they gather?';
+
+export function validateDecision(raw: unknown): InterviewDecision {
+  const o = asObject(raw);
+  const done = o.done === true || o.done === 'true';
+  if (done) return { done: true };
+  const question = typeof o.question === 'string' && o.question.trim() ? o.question.trim() : '';
+  const placeholder =
+    typeof o.placeholder === 'string' && o.placeholder.trim() ? o.placeholder.trim() : undefined;
+  return { done: false, question: question || FALLBACK_GAP_QUESTION, placeholder };
+}
+
+export function validateProfile(raw: unknown, base: BusinessProfileInput): InterviewProfile {
+  const o = asObject(raw);
+  const c = o.customer && typeof o.customer === 'object' ? (o.customer as Record<string, unknown>) : {};
+  const customer: CustomerProfile = {
+    description:
+      typeof c.description === 'string' && c.description.trim()
+        ? c.description.trim()
+        : `Customers who need a ${base.type}`,
+    signals: asStringArray(c.signals, 4),
+    locations: asStringArray(c.locations, 6),
+    outreach: asStringArray(c.outreach, 4),
+  };
+
+  const goals = asStringArray(o.goals, 4);
+  const capabilities = asStringArray(o.capabilities, 4);
+
+  // Geo/name always come from `base` — the model only supplies the soft fields.
+  return {
+    ...base,
+    type: typeof o.type === 'string' && o.type.trim() ? o.type.trim() : base.type,
+    description:
+      typeof o.description === 'string' && o.description.trim() ? o.description.trim() : base.description,
+    availability:
+      typeof o.availability === 'string' && o.availability.trim()
+        ? o.availability.trim()
+        : base.availability,
+    goals: goals.length ? goals : base.goals,
+    capabilities: capabilities.length ? capabilities : base.capabilities,
+    customer,
+  };
+}
+
 /**
  * The model ranks/justifies; we keep the *facts* (coords, address, distance) from
  * our own candidate data so it can never hallucinate a location. It only supplies
@@ -450,6 +593,50 @@ function ANALYZE_PROMPT(p: BusinessProfileInput): string {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/** The distilled customer-discovery lens that guides the adaptive interview. */
+const EXPANSION_QUESTIONS = [
+  'Who needs this?',
+  'How would I recognize them?',
+  'Where do they physically gather (places, neighborhoods, events)?',
+  'What problem are they trying to solve?',
+  'What signals show they need help right now?',
+  'How can I reach them?',
+  'How valuable are they, and how likely to buy?',
+  'How could I find ten more just like them?',
+].join(' · ');
+
+function transcript(history: InterviewTurn[]): string {
+  if (!history.length) return '(no answers yet)';
+  return history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n');
+}
+
+function INTERVIEW_STEP_PROMPT(history: InterviewTurn[]): string {
+  return [
+    'You are an experienced local-business growth consultant running a SHORT discovery interview with a busy owner.',
+    'Your goal: gather just enough to confidently infer WHO their ideal customer is, HOW to recognize them, WHERE they physically gather, and HOW to reach them — enough to search for real nearby places to grow into.',
+    `Use this lens to find the biggest missing gap: ${EXPANSION_QUESTIONS}`,
+    'Conversation so far:',
+    transcript(history),
+    'Decide the single most useful NEXT step. Ask ONE focused question that fills the biggest gap and, when possible, unlocks physical-place searches. Never ask what you can already infer from the answers above. Keep the question under 20 words and plain-spoken.',
+    'Set "done" to true as soon as you could confidently describe the ideal customer and where to find them — do not pad the interview.',
+    'JSON shape: {"done":boolean,"question":string,"placeholder":string}. When done is true, question/placeholder may be empty.',
+    JSON_RULES,
+  ].join('\n');
+}
+
+function INTERVIEW_SUMMARY_PROMPT(history: InterviewTurn[], base: BusinessProfileInput): string {
+  return [
+    'You are a local-business growth consultant. Condense this discovery interview into a structured profile.',
+    `Business name: ${base.name}. Location: ${base.city} (serves within ${base.serviceRadiusMiles} miles).`,
+    'Interview:',
+    transcript(history),
+    'Infer the ideal-customer picture that will drive searches for real nearby places. "locations" must be concrete, searchable place types (e.g. "office parks", "breweries with patios", "weekend sports tournaments").',
+    'Do NOT output city, coordinates, or radius — those are already known. Keep every string under 16 words.',
+    'JSON shape: {"type":string,"description":string,"availability":string,"goals":string[2..3],"capabilities":string[2..3],"customer":{"description":string,"signals":string[2..3],"locations":string[3..5],"outreach":string[2..3]}}',
+    JSON_RULES,
+  ].join('\n');
 }
 
 function RANK_PROMPT(

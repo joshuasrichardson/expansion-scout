@@ -54,6 +54,56 @@ export interface PlaceCandidate {
   context?: string;
 }
 
+/**
+ * Bounds on the adaptive interview, enforced in code (not just the prompt) so a
+ * small model can never quit after one answer or loop forever. Below MIN we ask
+ * again even if Gemma says done; at MAX we force done.
+ */
+export const MIN_QUESTIONS = 3;
+export const MAX_QUESTIONS = 6;
+
+/** One completed Q/A exchange in the adaptive discovery interview. */
+export interface InterviewTurn {
+  question: string;
+  answer: string;
+}
+
+/**
+ * Gemma's decision after each answer: ask one more focused question, or stop
+ * because it can already infer the business and its ideal customer well enough
+ * to run good place searches.
+ */
+export interface InterviewDecision {
+  done: boolean;
+  /** The next question to ask, when `done` is false. */
+  question?: string;
+  /** Example-answer hint for the input, when `done` is false. */
+  placeholder?: string;
+}
+
+/**
+ * Gemma's inferred picture of the ideal customer — the bridge from the interview
+ * to good place searches. `locations` are the physical-place search seeds.
+ */
+export interface CustomerProfile {
+  /** Who needs this — the ideal customer in one line. */
+  description: string;
+  /** How to recognize them / signals they need help now. */
+  signals: string[];
+  /** Where they physically congregate — seeds for place discovery. */
+  locations: string[];
+  /** How to reach them (channels, venues, intros). */
+  outreach: string[];
+}
+
+/**
+ * What a completed interview yields: a full business profile plus the inferred
+ * customer picture, ready to feed `analyzeBusiness` and place search.
+ */
+export interface InterviewProfile extends BusinessProfileInput {
+  customer: CustomerProfile;
+}
+
 /** Gemma's read on the business — feeds opportunity ranking. */
 export interface BusinessAnalysis {
   summary: string;

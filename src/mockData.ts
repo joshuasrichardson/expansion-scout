@@ -35,6 +35,15 @@ export const todaysMission: DailyMission = {
   status: 'available',
 };
 
+/**
+ * The interview's opening question. Shown immediately (no cold-start wait) before
+ * Gemma takes over and adaptively decides what — if anything — to ask next.
+ */
+export const SEED_QUESTION = {
+  question: 'What product or service do you most want to grow right now?',
+  placeholder: 'e.g. weekday lunch service, catering for local offices',
+} as const;
+
 export const interviewQuestions: InterviewQuestion[] = [
   {
     id: 'q-1',

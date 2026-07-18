@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, View, type DimensionValue } from 'react-native';
 
 import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
@@ -28,6 +28,12 @@ import {
   type InferenceMeta,
   type RankedOpportunity,
 } from '@/services/gemma';
+import {
+  ensureModelDownloaded,
+  isModelDownloaded,
+  ModelConfig,
+  type DownloadProgress,
+} from '@/services/modelManager';
 
 type SampleRun = {
   meta: InferenceMeta;
@@ -37,9 +43,13 @@ type SampleRun = {
 
 export function LocalAiStatus() {
   const theme = useTheme();
+  const isNative = Platform.OS !== 'web';
   const [status, setStatus] = useState<GemmaStatus | null>(null);
   const [running, setRunning] = useState(false);
   const [sample, setSample] = useState<SampleRun | null>(null);
+  const [modelReady, setModelReady] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
 
   const refresh = useCallback(async () => {
     setStatus(await getGemmaStatus());
@@ -50,12 +60,31 @@ export function LocalAiStatus() {
     (async () => {
       const s = await getGemmaStatus();
       if (!cancelled) setStatus(s);
+      if (isNative) {
+        const ready = await isModelDownloaded().catch(() => false);
+        if (!cancelled) setModelReady(ready);
+      }
       warmUpGemma(); // preload so the first real call isn't a cold start
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isNative]);
+
+  const downloadModel = useCallback(async () => {
+    setDownloading(true);
+    try {
+      await ensureModelDownloaded((p) => setProgress(p));
+      setModelReady(true);
+      await refresh();
+      warmUpGemma();
+    } catch {
+      // Stays not-ready; the deterministic fallback keeps the app fully usable.
+    } finally {
+      setDownloading(false);
+      setProgress(null);
+    }
+  }, [refresh]);
 
   const runSample = useCallback(async () => {
     setRunning(true);
@@ -102,6 +131,50 @@ export function LocalAiStatus() {
           Powered locally by Gemma 4 · Your business strategy stays on your device.
         </ThemedText>
       </Card>
+
+      {isNative && (
+        <Card>
+          <View style={styles.row}>
+            <View style={[styles.dot, { backgroundColor: modelReady ? theme.success : theme.textMuted }]} />
+            <ThemedText type="bodyBold">
+              {modelReady ? 'On-device model downloaded' : 'On-device model not downloaded'}
+            </ThemedText>
+          </View>
+          <ThemedText type="caption" themeColor="textSecondary">
+            {ModelConfig.fileName} · Gemma 4 E2B QAT (~3.4 GB, one-time download)
+          </ThemedText>
+
+          {downloading && progress && (
+            <>
+              <View style={[styles.progressTrack, { backgroundColor: theme.backgroundSelected }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      backgroundColor: theme.info,
+                      width: `${Math.round(progress.fraction * 100)}%` as DimensionValue,
+                    },
+                  ]}
+                />
+              </View>
+              <ThemedText type="caption" themeColor="textMuted">
+                {formatGB(progress.writtenBytes)} / {formatGB(progress.totalBytes)} (
+                {Math.round(progress.fraction * 100)}%)
+              </ThemedText>
+            </>
+          )}
+
+          {!modelReady && (
+            <PrimaryButton
+              label={downloading ? 'Downloading…' : 'Download Gemma for on-device'}
+              variant={downloading ? 'secondary' : 'primary'}
+              disabled={downloading}
+              onPress={downloadModel}
+              icon={downloading ? <ActivityIndicator color={theme.text} /> : undefined}
+            />
+          )}
+        </Card>
+      )}
 
       <PrimaryButton
         label={running ? 'Reasoning on-device…' : 'Run sample reasoning'}
@@ -186,11 +259,17 @@ function hostOf(url: string): string {
   return url.replace(/^https?:\/\//, '');
 }
 
+function formatGB(bytes: number): string {
+  return `${(bytes / 1e9).toFixed(2)} GB`;
+}
+
 const styles = StyleSheet.create({
   section: { gap: Spacing.three },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   flex: { flex: 1 },
   dot: { width: 10, height: 10, borderRadius: Radius.pill },
+  progressTrack: { height: 8, borderRadius: Radius.pill, overflow: 'hidden', marginTop: Spacing.one },
+  progressFill: { height: 8, borderRadius: Radius.pill },
   metaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, marginTop: Spacing.one },
   pill: {
     flexDirection: 'row',

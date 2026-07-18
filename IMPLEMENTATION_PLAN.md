@@ -150,15 +150,16 @@ works.
   inference latency** on each result so the UI and metrics can surface it. Unit-test
   parsing, schema validation, and fallback.
 - **T5a — Real on-device Gemma inference + locality proof.** ✅ *(Rubric 4 — highest
-  risk.)* `services/gemma.ts` runs real Gemma 4 (`gemma4:e2b-it-qat`) via a local
-  Ollama-compatible runtime, behind a swappable `GemmaTransport`. Locality proof
-  lives in `LocalAiStatus` (design-system screen): on-device badge, model, endpoint,
-  probe latency, and a "Run sample reasoning" button that shows real `InferenceMeta`.
-  Verified end-to-end by `npm run gemma:eval` (see EVALUATION.md). **Remaining for
-  full credit on a *physical* phone:** swap `GemmaTransport` for an embedded runtime
-  (llama.rn / MediaPipe LLM Inference) so inference runs inside the app process — the
-  callers don't change. Today's transport is real on-device inference on the host
-  machine (works in the iOS Simulator and in airplane mode there).
+  risk.)* Two real transports behind one `GemmaTransport`: **embedded llama.rn**
+  (Gemma runs inside the app process on the phone GPU — true on-device) and **Ollama
+  HTTP** (dev/simulator). `resolveTransport()` auto-selects (device: llama → ollama;
+  web: ollama). Model download/management in `services/modelManager.ts`; entitlements
+  + config plugin wired in `app.json`. Locality proof in `LocalAiStatus` (on-device
+  badge, model, endpoint, probe latency, sample-reasoning meta, model-download UI).
+  Reasoning quality/latency/fallback verified via `npm run gemma:eval` (EVALUATION.md).
+  **Remaining (hands-on, can't run in Simulator/CI):** build a dev client and verify
+  end-to-end llama.rn inference + airplane-mode proof on a physical iPhone — full
+  steps in **ON_DEVICE.md**.
 - **T5b — Data flow & provenance.** *(Rubric 2.)* Write `DATA_FLOW.md`: every input
   (interview answers, GPS, Places candidates), where each is processed (device vs.
   Google), and what is stored (in-memory only) or transmitted (Places/map tiles only —
