@@ -70,8 +70,11 @@ export const GemmaConfig = {
   model: process.env.EXPO_PUBLIC_GEMMA_MODEL ?? 'gemma4:e2b-it-qat',
   /** Set to "false" to force the deterministic fallback (e.g. for a safe demo). */
   enabled: process.env.EXPO_PUBLIC_GEMMA_ENABLED !== 'false',
-  /** Per-call ceiling. Cold start loads the model (~10–15s), so keep generous. */
-  timeoutMs: Number(process.env.EXPO_PUBLIC_GEMMA_TIMEOUT_MS ?? 22000),
+  /**
+   * Per-call ceiling. Cold start loads the model (~10–15s), and back-to-back
+   * calls (interview summary → analysis) queue on one runtime, so keep generous.
+   */
+  timeoutMs: Number(process.env.EXPO_PUBLIC_GEMMA_TIMEOUT_MS ?? 30000),
 } as const;
 
 /* -------------------------------------------------------------------------- */
@@ -577,10 +580,11 @@ export function validateProfile(raw: unknown, base: BusinessProfileInput): Inter
   const goals = asStringArray(o.goals, 4);
   const capabilities = asStringArray(o.capabilities, 4);
 
-  // Geo/name always come from `base` — the model only supplies the soft fields.
+  // Identity (name, type) and geo always come from `base` — observed failure:
+  // the model rewrote a pressure washer's type to "B2B Maintenance Contracts".
+  // The model only supplies the soft fields below.
   return {
     ...base,
-    type: typeof o.type === 'string' && o.type.trim() ? o.type.trim() : base.type,
     description:
       typeof o.description === 'string' && o.description.trim() ? o.description.trim() : base.description,
     availability:
@@ -782,8 +786,8 @@ function INTERVIEW_SUMMARY_PROMPT(history: InterviewTurn[], base: BusinessProfil
     'Interview:',
     transcript(history),
     'Infer the ideal-customer picture that will drive searches for real nearby places. "locations" must be concrete, searchable place types (e.g. "office parks", "breweries with patios", "weekend sports tournaments").',
-    'Do NOT output city, coordinates, or radius — those are already known. Keep every string under 16 words.',
-    'JSON shape: {"type":string,"description":string,"availability":string,"goals":string[2..3],"capabilities":string[2..3],"customer":{"description":string,"signals":string[2..3],"locations":string[3..5],"outreach":string[2..3]}}',
+    'Do NOT output the business name, type, city, coordinates, or radius — those are already known. Keep every string under 16 words.',
+    'JSON shape: {"description":string,"availability":string,"goals":string[2..3],"capabilities":string[2..3],"customer":{"description":string,"signals":string[2..3],"locations":string[3..5],"outreach":string[2..3]}}',
     JSON_RULES,
   ].join('\n');
 }

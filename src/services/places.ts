@@ -26,6 +26,14 @@ import {
   type PlaceCandidate,
 } from './gemmaTypes';
 import { synthesizeCandidates } from './localCandidates';
+import {
+  cacheKeyFor,
+  entryAgeMs,
+  FRESH_MS,
+  loadPlacesCache,
+  savePlacesCache,
+  STALE_MS,
+} from './placesCache';
 
 /* -------------------------------------------------------------------------- */
 /* Config                                                                     */
@@ -293,10 +301,25 @@ export async function getPlaceCandidates(
     };
   }
 
+  const queries = queriesFor(profile, analysis);
+  const cacheKey = cacheKeyFor(
+    profile.latitude,
+    profile.longitude,
+    profile.serviceRadiusMiles,
+    queries.map((q) => q.query),
+  );
+
+  // Same business, same targets, searched recently → reuse the real results
+  // instead of burning quota (and seconds) on an identical search.
+  const cached = await loadPlacesCache();
+  if (cached && cached.key === cacheKey && entryAgeMs(cached) < FRESH_MS && cached.candidates.length) {
+    return { candidates: cached.candidates, source: 'live', note: 'From this business’s recent discovery (cached on device).' };
+  }
+
   try {
     // One query per target, in parallel; a single failure can't sink the batch.
     const settled = await Promise.allSettled(
-      queriesFor(profile, analysis).map(async ({ category, query }) => {
+      queries.map(async ({ category, query }) => {
         const places = await searchText(query, profile);
         return places
           .map((p) => normalizePlace(p, category, profile))
@@ -317,21 +340,43 @@ export async function getPlaceCandidates(
       .slice(0, PlacesConfig.maxResults);
 
     if (!candidates.length) {
-      return {
-        candidates: synthesizeCandidates(profile, analysis),
-        source: 'derived',
-        note: 'Places returned no usable results; targets derived from your profile.',
-      };
+      return fallbackAfterFailure(profile, analysis, cached, 'Places returned no usable results');
     }
 
+    void savePlacesCache(cacheKey, candidates);
     return { candidates, source: 'live' };
   } catch (err) {
+    return fallbackAfterFailure(profile, analysis, cached, `Places discovery failed (${describeError(err)})`);
+  }
+}
+
+/**
+ * After a failed live search: the last REAL results for roughly this business
+ * (if not too stale) beat synthetic targets; derived targets are the floor.
+ */
+function fallbackAfterFailure(
+  profile: BusinessProfileInput,
+  analysis: BusinessAnalysis | undefined,
+  cached: Awaited<ReturnType<typeof loadPlacesCache>>,
+  reason: string,
+): PlacesResult {
+  // Only reuse results discovered around the SAME location — a stale cache
+  // from a previous business/city must never leak into this one.
+  const sameArea = cached?.key.startsWith(
+    `${profile.latitude.toFixed(2)},${profile.longitude.toFixed(2)},`,
+  );
+  if (cached && sameArea && entryAgeMs(cached) < STALE_MS && cached.candidates.length) {
     return {
-      candidates: synthesizeCandidates(profile, analysis),
-      source: 'derived',
-      note: `Places discovery failed (${describeError(err)}); targets derived from your profile.`,
+      candidates: cached.candidates,
+      source: 'live',
+      note: `${reason}; showing this business’s last real discovery (cached on device).`,
     };
   }
+  return {
+    candidates: synthesizeCandidates(profile, analysis),
+    source: 'derived',
+    note: `${reason}; targets derived from your profile.`,
+  };
 }
 
 /**

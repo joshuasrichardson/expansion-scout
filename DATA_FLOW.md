@@ -14,8 +14,9 @@ information is available in-app under the **On-device AI** badge → *Your data*
 | Gemma's analysis (focus, strengths, target segments) | Analysis screen | Generated on device | Cached on device with the profile so Home can show a real mission on relaunch | **Never** |
 | Ranked opportunities (scores, reasons, evidence, risks, confidence) | Growth-plan pipeline | Generated on device | In memory for the session | **Never** |
 | Outreach drafts | Outreach screen | Generated on device | In memory; leaves only when **you** copy/share a draft yourself | Only by your explicit copy/share action |
-| Place lookups (optional) | Growth-plan pipeline, only when a Google Places key is configured | Google Places Text Search | Normalized results in memory | **Yes — but only** a place-type query (e.g. "office park or corporate campus", or a Gemma-suggested place type) and a location-bias circle. Never your name, goals, answers, analysis, or drafts. |
+| Place lookups (optional) | Growth-plan pipeline, only when a Google Places key is configured | Google Places Text Search | Normalized results in memory + the latest set cached on device (`places-cache.json`, ≤7 days) so reopening the app doesn't re-search | **Yes — but only** a place-type query (e.g. "property management offices", from Gemma's `mapsQuery`) and a location-bias circle. Never your name, goals, answers, analysis, or drafts. Returned fields used: name, address, location, type, rating, review count, phone, website. |
 | City geocoding (optional) | Saving the profile with a Places key configured | Google Places | Coordinates cached with the profile on device | **Yes** — the city string only |
+| Today's weather (optional) | Daily Mission screen | Open-Meteo (no key, no account) | In memory for the screen | **Yes** — rounded coordinates only; nothing else |
 | Map tiles | None — the growth-plan map is a schematic rendered locally from coordinates | On device | — | **No** |
 
 ## What the Google Places request contains — exactly

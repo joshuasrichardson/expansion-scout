@@ -46,7 +46,9 @@ function seedsFrom(
   const fromSegments = (analysis?.targetSegments ?? []).map((s) => ({
     label: s.label,
     category: s.category,
-    context: s.discovery || s.whoTheyAre,
+    // whoTheyAre reads as evidence ("offices with a repeating need");
+    // discovery reads as an instruction — keep it out of evidence lines.
+    context: s.whoTheyAre || s.discovery,
   }));
   if (fromSegments.length >= 3) return fromSegments.slice(0, 6);
 

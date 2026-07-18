@@ -144,9 +144,11 @@ export function analyzeBusinessLocal(profile: BusinessProfileInput | InterviewPr
       ...(profile.capabilities[1] ? [profile.capabilities[1]] : []),
       'Local and close to every customer it serves',
     ].slice(0, 3),
+    // Colon framing keeps the owner's goal verbatim — splicing it into a
+    // sentence mangles grammar ("toward secure 5 contracts").
     focus: wantsRecurring
-      ? `Pitch one standing, repeat arrangement today — a first step toward ${goal.toLowerCase()}`
-      : `Get in front of one concentrated group of likely customers today — toward ${goal.toLowerCase()}`,
+      ? `Pitch one standing, repeat arrangement today. Goal: ${goal}`
+      : `Get in front of one concentrated group of likely customers today. Goal: ${goal}`,
     recommendedCategories: recommended,
     targetSegments: segmentsFromCategories(recommended, customer),
   };
@@ -206,7 +208,8 @@ const CATEGORY_SEGMENT: Record<
 
 // Some locations imply a residential archetype more specifically than the
 // partnership template's default "physical-business" — refine after matching.
-const RESIDENTIAL = /apartment|complex|hoa|resident|housing|neighborhood/i;
+// (Deliberately no bare "complex": "shopping center complexes" is not housing.)
+const RESIDENTIAL = /apartment|hoa\b|resident|housing|condo|neighborhood/i;
 
 /**
  * Build 3–5 target customer segments deterministically. Guarantees coverage of
@@ -222,13 +225,17 @@ export function segmentsFromCategories(
   const cats: OpportunityCategory[] = categories.length ? categories : ['recurring', 'partnership'];
   const locations = customer?.locations ?? [];
   const seen = new Set<OpportunityCategory>();
+  const usedLocations = new Set<string>();
   const segments: CustomerSegment[] = [];
 
   for (const cat of cats) {
     if (seen.has(cat)) continue;
     seen.add(cat);
     const t = CATEGORY_SEGMENT[cat];
-    const match = locations.find((l) => t.keywords.test(l));
+    // Each owner-named place personalizes at most ONE segment — otherwise two
+    // categories matching the same phrase render as duplicate cards.
+    const match = locations.find((l) => !usedLocations.has(l) && t.keywords.test(l));
+    if (match) usedLocations.add(match);
     let type: CustomerSegmentType = t.type;
     let reach: OutreachChannel = t.reach;
     if (match && RESIDENTIAL.test(match)) {
