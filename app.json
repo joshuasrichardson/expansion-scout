@@ -10,6 +10,10 @@
     "ios": {
       "bundleIdentifier": "ai.halda.expansionscout",
       "icon": "./assets/images/icon.png",
+      "entitlements": {
+        "com.apple.developer.kernel.increased-memory-limit": true,
+        "com.apple.developer.kernel.extended-virtual-addressing": true
+      },
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
