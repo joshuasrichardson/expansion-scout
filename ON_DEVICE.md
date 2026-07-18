@@ -23,8 +23,14 @@ llama.rn is a native module (llama.cpp). Expo Go can't load it, so you must buil
 - The model (~3.35 GB) is **downloaded on device at runtime**, never bundled (App
   Store rejects multi-GB binaries). The in-app "Download Gemma for on-device" button
   (on the design-system screen) handles this via `modelManager`.
-- iOS needs the increased-memory-limit entitlement to hold the model in RAM — enabled
-  by the `llama.rn` config plugin (`enableEntitlements: true` in `app.json`).
+- iOS needs the increased-memory-limit entitlement to hold the model in RAM. **Do not
+  rely on the `llama.rn` config plugin for this** — its `enableEntitlements` option is
+  gated behind `NODE_ENV=production` / an EAS build profile and silently does nothing
+  in a local `expo prebuild`, leaving an empty `.entitlements` plist. Without it, iOS
+  jetsam-kills the app mid-generation (~3.4 GB per-app ceiling vs. a 3.35 GB model).
+  The entitlements are therefore declared explicitly under `expo.ios.entitlements` in
+  `app.json`; after any prebuild, verify `ios/expansionscout/expansionscout.entitlements`
+  contains `com.apple.developer.kernel.increased-memory-limit`.
 
 ## One-time setup
 

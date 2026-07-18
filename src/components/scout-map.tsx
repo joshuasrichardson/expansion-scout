@@ -14,7 +14,7 @@
  * Web always uses the schematic via scout-map.web.tsx.
  */
 
-import { Component, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import type MapViewType from 'react-native-maps';
 import type { Region } from 'react-native-maps';
@@ -22,12 +22,14 @@ import type { Region } from 'react-native-maps';
 import {
   CATEGORY_ICON,
   CATEGORY_LABEL,
+  PlannedBadge,
   SchematicMap,
   type GeoPoint,
   type ScoutMapProps,
 } from '@/components/schematic-map';
 import { ThemedText } from '@/components/themed-text';
 import { Radius } from '@/constants/theme';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useTheme } from '@/hooks/use-theme';
 
 export { CATEGORY_ICON, CATEGORY_LABEL };
@@ -95,9 +97,11 @@ function TileMap({
   radiusMiles,
   selectedId,
   onSelect,
+  plannedIds,
   maps,
 }: ScoutMapProps & { maps: RNMapsModule }) {
   const theme = useTheme();
+  const reduceMotion = useReducedMotion();
   const MapView = maps.default;
   const { Marker, Circle } = maps;
   const mapRef = useRef<MapViewType | null>(null);
@@ -109,6 +113,25 @@ function TileMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [origin.latitude, origin.longitude, planKey],
   );
+
+  // The reveal: markers MOUNT one by one in rank order, so Gemma's picks land
+  // on the map best-first. Mount-staggering (instead of animating the marker
+  // view) stays reliable on providers that snapshot marker children. State is
+  // keyed by plan so a new set of places restarts the landing by derivation.
+  const [pinReveal, setPinReveal] = useState<{ key: string; count: number }>({
+    key: planKey,
+    count: 0,
+  });
+  const visiblePins = reduceMotion
+    ? opportunities.length
+    : pinReveal.key === planKey
+      ? pinReveal.count
+      : 0;
+  useEffect(() => {
+    if (reduceMotion || visiblePins >= opportunities.length) return;
+    const timer = setTimeout(() => setPinReveal({ key: planKey, count: visiblePins + 1 }), 110);
+    return () => clearTimeout(timer);
+  }, [planKey, reduceMotion, visiblePins, opportunities.length]);
 
   // Card ↔ pin sync: glide the camera to the selected place (zoom unchanged).
   useEffect(() => {
@@ -153,19 +176,20 @@ function TileMap({
           </View>
         </Marker>
 
-        {opportunities.map((o) => {
+        {opportunities.slice(0, visiblePins).map((o) => {
           const selected = o.id === selectedId;
+          const planned = plannedIds?.has(o.id) ?? false;
           return (
             <Marker
-              // Selection changes the pin's size/content — re-keying forces the
-              // marker view to refresh reliably on both map providers.
-              key={`${o.id}-${selected ? 'sel' : 'idle'}`}
+              // Selection/plan state changes the pin's content — re-keying
+              // forces the marker view to refresh reliably on both providers.
+              key={`${o.id}-${selected ? 'sel' : 'idle'}-${planned ? 'plan' : 'open'}`}
               coordinate={{ latitude: o.latitude, longitude: o.longitude }}
               anchor={{ x: 0.5, y: 0.5 }}
               zIndex={selected ? 2 : 1}
               tracksViewChanges={false}
               onPress={() => onSelect(o.id)}
-              accessibilityLabel={`${o.name}, ${CATEGORY_LABEL[o.category]}, score ${o.score}`}
+              accessibilityLabel={`${o.name}, ${CATEGORY_LABEL[o.category]}, score ${o.score}${planned ? ', on today’s plan' : ''}`}
             >
               <Pressable
                 accessibilityRole="button"
@@ -189,6 +213,7 @@ function TileMap({
                     {o.score}
                   </ThemedText>
                 )}
+                {planned && <PlannedBadge />}
               </Pressable>
             </Marker>
           );

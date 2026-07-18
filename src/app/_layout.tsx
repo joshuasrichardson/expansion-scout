@@ -17,7 +17,9 @@ export default function RootLayout() {
             <AnimatedSplashOverlay />
             <StatusBar style="auto" />
             <Stack>
-              <Stack.Screen name="index" options={{ headerShown: false }} />
+              {/* Home hides its header, but the title still names the iOS back
+                  button on pushed screens — without it, it reads "< index". */}
+              <Stack.Screen name="index" options={{ headerShown: false, title: 'Home' }} />
               <Stack.Screen name="daily-mission" options={{ title: 'Daily Mission' }} />
               <Stack.Screen name="interview" options={{ title: 'AI Conversation' }} />
               <Stack.Screen name="analysis" options={{ title: 'Analysis' }} />

@@ -237,8 +237,11 @@ export class OllamaTransport implements GemmaTransport {
 
 /**
  * Tries transports in order and sticks with the first that's actually available.
- * Used for `auto`: on device we prefer embedded llama.rn (true on-device) and
- * fall back to Ollama (dev/simulator over LAN); a per-call failure re-resolves.
+ * Used for `auto`: on device we prefer embedded llama.rn (true on-device — the
+ * app's privacy claim) and fall back to Ollama (dev/simulator over LAN). A
+ * per-call failure re-resolves and retries the same call on the next candidate,
+ * so a mid-flow runtime failure still gets a Gemma answer instead of dropping
+ * that call to the deterministic fallback.
  */
 class AutoTransport implements GemmaTransport {
   private chosen: GemmaTransport | null = null;
@@ -262,7 +265,9 @@ class AutoTransport implements GemmaTransport {
     try {
       return await t.generate(prompt, opts);
     } catch (err) {
-      this.chosen = null; // re-resolve next time (e.g. runtime went away)
+      this.chosen = null; // re-resolve (e.g. runtime went away)
+      const next = await this.pick();
+      if (next && next !== t) return next.generate(prompt, opts);
       throw err;
     }
   }
@@ -275,8 +280,9 @@ class AutoTransport implements GemmaTransport {
 
 /**
  * Choose the transport from `EXPO_PUBLIC_GEMMA_TRANSPORT`:
- *   • `llama`  — force embedded llama.rn (device only)
- *   • `ollama` — force the local HTTP runtime (dev/simulator)
+ *   • `llama`  — force embedded llama.rn (device only; the true-on-device demo)
+ *   • `ollama` — force the local HTTP runtime (dev/simulator; much faster —
+ *     handy while iterating)
  *   • `auto` (default) — device: llama → ollama; web: ollama
  */
 function resolveTransport(): GemmaTransport {
@@ -1036,17 +1042,21 @@ function transcript(history: InterviewTurn[]): string {
   return history.map((t, i) => `Q${i + 1}: ${t.question}\nA${i + 1}: ${t.answer}`).join('\n');
 }
 
+// Static instructions FIRST, growing transcript LAST: consecutive interview
+// steps then share their entire prefix, so the runtime's KV-cache reuse
+// (llama.cpp and Ollama both keep the longest common prefix) only has to
+// prefill the newest Q/A each turn instead of the whole prompt.
 function INTERVIEW_STEP_PROMPT(history: InterviewTurn[]): string {
   return [
     'You are an experienced local-business growth consultant running a SHORT discovery interview with a busy owner.',
     'Your goal: gather just enough to confidently infer WHO their ideal customer is, HOW to recognize them, WHERE they physically gather, and HOW to reach them — enough to search for real nearby places to grow into.',
     `Use this lens to find the biggest missing gap: ${EXPANSION_QUESTIONS}`,
-    'Conversation so far:',
-    transcript(history),
-    'Decide the single most useful NEXT step. Ask ONE focused question that fills the biggest gap and, when possible, unlocks physical-place searches. Never ask what you can already infer from the answers above. Keep the question under 20 words and plain-spoken.',
+    'After reading the conversation below, decide the single most useful NEXT step. Ask ONE focused question that fills the biggest gap and, when possible, unlocks physical-place searches. Never ask what you can already infer from the answers. Keep the question under 20 words and plain-spoken.',
     'Set "done" to true as soon as you could confidently describe the ideal customer and where to find them — do not pad the interview.',
     'JSON shape: {"done":boolean,"question":string,"placeholder":string}. When done is true, question/placeholder may be empty.',
     JSON_RULES,
+    'Conversation so far:',
+    transcript(history),
   ].join('\n');
 }
 

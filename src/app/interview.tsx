@@ -77,14 +77,19 @@ export default function InterviewScreen() {
     setThinkingLabel(null);
     setPhase('thinking');
 
+    // At the cap the outcome is forced regardless of what Gemma decides — go
+    // straight to the summary instead of spending a whole inference on a
+    // decision that would be discarded.
+    if (nextHistory.length >= MAX_QUESTIONS) {
+      await finish(nextHistory);
+      return;
+    }
+
     // Gemma reasons about whether it has enough to search — else asks one more.
     const { data: decision } = await interviewStep(nextHistory, onReasoning);
 
-    const atMax = nextHistory.length >= MAX_QUESTIONS;
     const belowMin = nextHistory.length < MIN_QUESTIONS;
-    const shouldStop = atMax || (decision.done && !belowMin);
-
-    if (shouldStop) {
+    if (decision.done && !belowMin) {
       await finish(nextHistory);
       return;
     }
@@ -131,9 +136,39 @@ export default function InterviewScreen() {
   return (
     <Screen>
       <View style={styles.header}>
-        <ThemedText type="smallBold" themeColor="textSecondary">
-          QUESTION {history.length + 1}
-        </ThemedText>
+        {business && (
+          <ThemedText type="caption" themeColor="textMuted">
+            {business.profile.name} · {business.profile.type} · {business.profile.city}
+          </ThemedText>
+        )}
+        <View
+          style={styles.dots}
+          accessibilityLabel={`Question ${history.length + 1} of up to ${MAX_QUESTIONS}`}
+        >
+          {Array.from({ length: MAX_QUESTIONS }, (_, i) => {
+            const answered = i < history.length;
+            const isCurrent = i === history.length;
+            return (
+              <View
+                key={i}
+                style={[
+                  styles.dot,
+                  answered && { backgroundColor: theme.accent },
+                  isCurrent && [styles.dotCurrent, { borderColor: theme.accent }],
+                  !answered && !isCurrent && { backgroundColor: theme.border },
+                ]}
+              />
+            );
+          })}
+          <ThemedText type="caption" themeColor="textMuted" style={styles.dotsLabel}>
+            QUESTION {history.length + 1}
+            {history.length + 1 >= MAX_QUESTIONS
+              ? ' · LAST QUESTION'
+              : history.length + 1 >= MIN_QUESTIONS
+                ? ' · WRAP UP ANYTIME'
+                : ''}
+          </ThemedText>
+        </View>
         <ThemedText type="subtitle">{current.question}</ThemedText>
         <ThemedText type="small" themeColor="textMuted">
           Gemma asks only what it needs to find where you should grow.
@@ -170,6 +205,16 @@ export default function InterviewScreen() {
 
 const styles = StyleSheet.create({
   header: { gap: Spacing.two },
+  dots: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  dot: { width: 8, height: 8, borderRadius: Radius.pill },
+  dotCurrent: {
+    width: 12,
+    height: 12,
+    borderRadius: Radius.pill,
+    borderWidth: 2,
+    backgroundColor: 'transparent',
+  },
+  dotsLabel: { marginLeft: Spacing.one },
   input: { minHeight: 96, fontSize: 16, lineHeight: 24, textAlignVertical: 'top' },
   thinking: {
     gap: Spacing.three,

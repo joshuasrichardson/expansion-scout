@@ -6,8 +6,9 @@
  */
 
 import { useEffect, useState } from 'react';
-import { AccessibilityInfo, Animated, Easing, StyleSheet, View } from 'react-native';
+import { Animated, Easing, StyleSheet, View } from 'react-native';
 
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useTheme } from '@/hooks/use-theme';
 
 const RING_DURATION_MS = 1600;
@@ -16,13 +17,7 @@ const RING_STAGGER_MS = 800;
 export function ReasoningPulse({ size = 44 }: { size?: number }) {
   const theme = useTheme();
   const [rings] = useState(() => [new Animated.Value(0), new Animated.Value(0)]);
-  const [reduceMotion, setReduceMotion] = useState(false);
-
-  useEffect(() => {
-    AccessibilityInfo.isReduceMotionEnabled?.()
-      .then((v) => setReduceMotion(!!v))
-      .catch(() => {});
-  }, []);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     if (reduceMotion) return;

@@ -200,7 +200,11 @@ export default function AnalysisScreen() {
                     : 'ON-DEVICE PLANNER · NO MODEL'}
               </ThemedText>
               <ThemedText type="code" themeColor="textMuted">
-                {(elapsedMs / 1000).toFixed(1)}s{tokens > 0 ? ` · ${tokens} tokens` : ''}
+                {(elapsedMs / 1000).toFixed(1)}s
+                {tokens > 0 ? ` · ${tokens} tokens` : ''}
+                {tokens > 0 && elapsedMs > 800
+                  ? ` · ${Math.round(tokens / (elapsedMs / 1000))} tok/s`
+                  : ''}
               </ThemedText>
             </View>
           </View>

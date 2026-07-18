@@ -1,10 +1,11 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, Share, StyleSheet, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
 import { ReasoningPulse } from '@/components/reasoning-pulse';
+import { CATEGORY_ICON, CATEGORY_LABEL } from '@/components/scout-map';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
@@ -15,10 +16,11 @@ import {
   type OpportunityCategory,
   type OutreachChannel,
   type OutreachTone,
+  type RankedOpportunity,
 } from '@/services/gemma';
 import { useBusiness } from '@/state/business-context';
 import { useOpportunities } from '@/state/opportunities-context';
-import { usePlan } from '@/state/plan-context';
+import { travelMinutesFor, usePlan } from '@/state/plan-context';
 
 /**
  * Outreach generator (T10). Gemma drafts privately on-device (template fallback
@@ -65,6 +67,10 @@ export default function OutreachScreen() {
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const runId = useRef(0);
+
+  // The exact real facts the draft may draw on — shown to the owner so "no
+  // invented facts" is checkable, not just claimed.
+  const facts = useMemo(() => (opportunity ? groundingFacts(opportunity) : []), [opportunity]);
 
   const generate = useCallback(
     async (nextChannel: OutreachChannel, nextTone: OutreachTone) => {
@@ -185,6 +191,33 @@ export default function OutreachScreen() {
               ? `Generated privately using Gemma · ${(meta.latencyMs / 1000).toFixed(1)}s on-device`
               : 'Drafted on-device from your business profile'}
           </ThemedText>
+
+          {facts.length > 0 && (
+            <View style={styles.factsBlock}>
+              <ThemedText type="label" themeColor="textMuted">
+                DRAFTED FROM THESE FACTS ONLY
+              </ThemedText>
+              <View style={styles.factChips}>
+                {facts.map((fact) => (
+                  <View
+                    key={fact}
+                    style={[
+                      styles.factChip,
+                      { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+                    ]}
+                  >
+                    <ThemedText type="caption" themeColor="textSecondary">
+                      {fact}
+                    </ThemedText>
+                  </View>
+                ))}
+              </View>
+              <ThemedText type="caption" themeColor="textMuted">
+                Nothing invented — every claim traces to what discovery actually found about{' '}
+                {opportunity.name}.
+              </ThemedText>
+            </View>
+          )}
         </>
       )}
 
@@ -253,6 +286,18 @@ function label(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** The opportunity's real attributes, as chips — the draft's entire fact pool. */
+function groundingFacts(o: RankedOpportunity): string[] {
+  const facts: string[] = [`${CATEGORY_ICON[o.category]} ${CATEGORY_LABEL[o.category]}`];
+  if (o.rating !== undefined) {
+    facts.push(`⭐ ${o.rating.toFixed(1)}${o.reviewCount ? ` (${o.reviewCount} reviews)` : ''}`);
+  }
+  facts.push(`⏰ Best time: ${o.bestTime}`);
+  facts.push(`🚗 ${travelMinutesFor(o.distanceMiles)} min away`);
+  if (o.estimatedValue) facts.push(`💰 ${o.estimatedValue}`);
+  return facts;
+}
+
 const styles = StyleSheet.create({
   header: { gap: Spacing.two },
   chipGroup: { gap: Spacing.two },
@@ -267,6 +312,14 @@ const styles = StyleSheet.create({
   },
   generating: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three, paddingVertical: Spacing.two },
   generatingText: { flex: 1 },
+  factsBlock: { gap: Spacing.two },
+  factChips: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
+  factChip: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+    borderRadius: Radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   subject: { fontSize: 16, lineHeight: 24, fontWeight: '600' },
   body: { minHeight: 200, fontSize: 16, lineHeight: 24, textAlignVertical: 'top' },
 });
