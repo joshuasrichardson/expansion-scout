@@ -5,7 +5,7 @@ import { LocalAiStatus } from '@/components/local-ai-status';
 import { PrimaryButton } from '@/components/primary-button';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
-import { Palette, Radius, Spacing, Typography, type TypographyVariant } from '@/constants/theme';
+import { Palette, Radius, Spacing, type TypographyVariant } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 /**

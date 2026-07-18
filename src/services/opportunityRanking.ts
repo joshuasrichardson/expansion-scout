@@ -15,6 +15,8 @@ import {
   type BusinessAnalysis,
   type BusinessProfileInput,
   type CustomerProfile,
+  type CustomerSegment,
+  type CustomerSegmentType,
   type InterviewDecision,
   type InterviewProfile,
   type InterviewTurn,
@@ -28,24 +30,17 @@ import {
 
 /** Relative weight per category — recurring, high-value work ranks higher. */
 const CATEGORY_WEIGHT: Record<OpportunityCategory, number> = {
-  catering: 1.0, // recurring, high ticket
-  partnership: 0.9, // recurring foot-traffic
+  recurring: 1.0, // standing accounts — predictable revenue
+  partnership: 0.9, // recurring pipeline via someone else's traffic
   event: 0.75, // one-off but high volume
-  lunch: 0.7, // steady but lower ticket
+  direct: 0.7, // steady but lower ticket
 };
 
 const CATEGORY_BEST_TIME: Record<OpportunityCategory, string> = {
-  lunch: 'Weekdays 11:30a–1:30p',
+  recurring: 'Weekday mornings (9–11a)',
   partnership: 'Weekday mid-afternoon (2–4p)',
-  catering: 'Weekday mornings',
   event: 'Evenings & weekends',
-};
-
-const CATEGORY_VALUE: Record<OpportunityCategory, string> = {
-  catering: '~$600–900/mo recurring',
-  partnership: '~$400–700/mo recurring',
-  event: '~$500–1,200 per event',
-  lunch: '~$200–400/wk',
+  direct: 'Peak hours for the spot',
 };
 
 /**
@@ -56,11 +51,11 @@ const CATEGORY_VALUE: Record<OpportunityCategory, string> = {
 const INTERVIEW_SCRIPT: { question: string; placeholder: string }[] = [
   {
     question: 'Which type of customer buys the most from you today?',
-    placeholder: 'e.g. weekday office crowds, families at weekend events',
+    placeholder: 'e.g. homeowners, property managers, weekday office workers',
   },
   {
     question: 'Where do those customers tend to gather — what kinds of places or events?',
-    placeholder: 'e.g. office parks, breweries, apartment complexes, tournaments',
+    placeholder: 'e.g. office parks, dealerships, apartment complexes, tournaments',
   },
   {
     question: 'When are you available to serve them?',
@@ -68,7 +63,7 @@ const INTERVIEW_SCRIPT: { question: string; placeholder: string }[] = [
   },
   {
     question: 'What has been holding you back from growing?',
-    placeholder: 'e.g. slow weekday afternoons, unsure which spots to target',
+    placeholder: 'e.g. slow weekday mornings, unsure which spots to target',
   },
 ];
 
@@ -87,8 +82,8 @@ export function interviewStepLocal(history: InterviewTurn[]): InterviewDecision 
 
 /**
  * Deterministic profile extraction: fold the free-text answers into the business
- * fields and synthesize a reasonable customer picture over `base`. For the demo
- * taco truck `base` is `demoBusiness`, so this always yields a non-empty profile.
+ * fields and synthesize a reasonable customer picture over `base` (the owner's
+ * stored profile), so this always yields a non-empty profile.
  */
 export function summarizeInterviewLocal(
   history: InterviewTurn[],
@@ -103,10 +98,10 @@ export function summarizeInterviewLocal(
     description: who || `Local customers who need a ${base.type} in ${base.city}`,
     signals: ['Nearby and easy to reach', 'Predictable, recurring demand'],
     locations: splitLocations(where) ?? [
-      'Office parks',
-      'Breweries and taprooms',
-      'Apartment complexes',
-      'Weekend events and tournaments',
+      'Office parks and business campuses',
+      'Apartment complexes and managed properties',
+      'Busy local venues',
+      'Weekend events and markets',
     ],
     outreach: ['Walk in and introduce yourself', 'Call or email the manager'],
   };
@@ -130,25 +125,144 @@ function splitLocations(where?: string): string[] | null {
   return parts.length ? parts.slice(0, 5) : null;
 }
 
-export function analyzeBusinessLocal(profile: BusinessProfileInput): BusinessAnalysis {
-  const goal = profile.goals[0]?.toLowerCase() ?? '';
-  const wantsRecurring = /recur|steady|regular|catering|contract/.test(goal);
+export function analyzeBusinessLocal(profile: BusinessProfileInput | InterviewProfile): BusinessAnalysis {
+  const goalText = profile.goals.join(' ').toLowerCase();
+  const wantsRecurring = /recur|steady|regular|contract|fleet|account|standing|monthly|weekly/.test(goalText);
+  const wantsVolume = /event|weekend|crowd|volume|traffic|busy/.test(goalText);
   const recommended: OpportunityCategory[] = wantsRecurring
-    ? ['catering', 'partnership', 'lunch', 'event']
-    : ['partnership', 'lunch', 'catering', 'event'];
+    ? ['recurring', 'partnership', 'direct', 'event']
+    : wantsVolume
+      ? ['event', 'direct', 'partnership', 'recurring']
+      : ['partnership', 'recurring', 'direct', 'event'];
+  const customer = 'customer' in profile ? profile.customer : undefined;
+  const goal = profile.goals[0] ?? 'more predictable revenue';
 
   return {
-    summary: `${profile.name} is a ${profile.type} in ${profile.city} serving within ${profile.serviceRadiusMiles} miles. The clearest path to growth is turning one-off sales into recurring, predictable revenue nearby.`,
+    summary: `${profile.name} is a ${profile.type} in ${profile.city} serving within ${profile.serviceRadiusMiles} miles. Its clearest path to "${goal}" is going to where its best customers already are, nearby.`,
     strengths: [
-      'Mobile — can meet demand wherever it clusters',
-      profile.capabilities[0] ?? 'Fast service with a focused menu',
-      'Low overhead vs. a fixed storefront',
-    ].filter(Boolean),
+      profile.capabilities[0] ?? `Established ${profile.type} service`,
+      ...(profile.capabilities[1] ? [profile.capabilities[1]] : []),
+      'Local and close to every customer it serves',
+    ].slice(0, 3),
+    // Colon framing keeps the owner's goal verbatim — splicing it into a
+    // sentence mangles grammar ("toward secure 5 contracts").
     focus: wantsRecurring
-      ? 'Land one recurring customer (catering or a standing partnership) this week'
-      : 'Put the truck where hungry crowds already gather at predictable times',
+      ? `Pitch one standing, repeat arrangement today. Goal: ${goal}`
+      : `Get in front of one concentrated group of likely customers today. Goal: ${goal}`,
     recommendedCategories: recommended,
+    targetSegments: segmentsFromCategories(recommended, customer),
   };
+}
+
+/**
+ * A per-category segment template — the deterministic mapping from an opportunity
+ * category to the *kind* of customer it represents, with its discovery method and
+ * reach channel. `segmentsFromCategories` personalizes the label/discovery from the
+ * owner's own answers (`customer.locations`) when they match, else uses the template.
+ */
+const CATEGORY_SEGMENT: Record<
+  OpportunityCategory,
+  Omit<CustomerSegment, 'category'> & { keywords: RegExp }
+> = {
+  recurring: {
+    type: 'physical-business',
+    reach: 'phone',
+    label: 'Businesses that could book you on a schedule',
+    whoTheyAre: 'Offices, fleets & property managers with a repeating need',
+    discovery: 'Search Maps for offices, dealerships & managed properties',
+    mapsQuery: 'office park or property management company',
+    why: 'One yes becomes predictable monthly revenue',
+    keywords: /office|fleet|dealership|property|manager|campus|corporate|company|clinic|warehouse/i,
+  },
+  partnership: {
+    type: 'partner-org',
+    reach: 'walk-in',
+    label: 'Local businesses whose customers overlap yours',
+    whoTheyAre: 'Established spots that could host or refer you',
+    discovery: 'Search Maps for busy complementary businesses nearby',
+    mapsQuery: 'popular local businesses',
+    why: 'Their existing traffic becomes your pipeline',
+    keywords: /brewery|bar|gym|salon|shop|store|venue|apartment|complex|hoa|resident|cafe/i,
+  },
+  event: {
+    type: 'public-gathering',
+    reach: 'email',
+    label: 'Recurring local events & gatherings',
+    whoTheyAre: 'Organizers of markets, tournaments & community events',
+    discovery: 'Check event calendars & venue listings in your radius',
+    mapsQuery: 'event venue or farmers market',
+    why: 'One booking puts you in front of a crowd',
+    keywords: /market|festival|fair|tournament|game|sport|gathering|expo|show/i,
+  },
+  direct: {
+    type: 'physical-business',
+    reach: 'walk-in',
+    label: 'High-traffic spots where your customers cluster',
+    whoTheyAre: 'People who need you, where they already spend time',
+    discovery: 'Search Maps for the busiest spots in your radius',
+    mapsQuery: 'busy shopping center or plaza',
+    why: 'Immediate sales while bigger accounts develop',
+    keywords: /park|plaza|downtown|mall|campus|lot|street|neighborhood/i,
+  },
+};
+
+// Some locations imply a residential archetype more specifically than the
+// partnership template's default "physical-business" — refine after matching.
+// (Deliberately no bare "complex": "shopping center complexes" is not housing.)
+const RESIDENTIAL = /apartment|hoa\b|resident|housing|condo|neighborhood/i;
+
+/**
+ * Build 3–5 target customer segments deterministically. Guarantees coverage of
+ * the recommended categories (so the list is never empty offline), and, when the
+ * owner named concrete places in the interview, personalizes the matching segment
+ * from their own words. Shared by the Gemma path (synthesize-when-empty) and the
+ * offline fallback, so both produce the same shape.
+ */
+export function segmentsFromCategories(
+  categories: OpportunityCategory[],
+  customer?: CustomerProfile,
+): CustomerSegment[] {
+  const cats: OpportunityCategory[] = categories.length ? categories : ['recurring', 'partnership'];
+  const locations = customer?.locations ?? [];
+  const seen = new Set<OpportunityCategory>();
+  const usedLocations = new Set<string>();
+  const segments: CustomerSegment[] = [];
+
+  for (const cat of cats) {
+    if (seen.has(cat)) continue;
+    seen.add(cat);
+    const t = CATEGORY_SEGMENT[cat];
+    // Each owner-named place personalizes at most ONE segment — otherwise two
+    // categories matching the same phrase render as duplicate cards.
+    const match = locations.find((l) => !usedLocations.has(l) && t.keywords.test(l));
+    if (match) usedLocations.add(match);
+    let type: CustomerSegmentType = t.type;
+    let reach: OutreachChannel = t.reach;
+    if (match && RESIDENTIAL.test(match)) {
+      type = 'residential-community';
+      reach = 'phone';
+    }
+    segments.push({
+      label: match ? titleCase(match) : t.label,
+      type,
+      whoTheyAre: t.whoTheyAre,
+      discovery: match ? `Search Maps for ${match.toLowerCase()} nearby` : t.discovery,
+      // The owner's own words make the sharpest Maps query.
+      mapsQuery: match ? match.toLowerCase() : t.mapsQuery,
+      reach,
+      why: t.why,
+      category: cat,
+    });
+    if (segments.length >= 5) break;
+  }
+
+  return segments;
+}
+
+/** Title-case a short free-text place phrase for use as a segment label. */
+function titleCase(s: string): string {
+  const cleaned = s.trim().replace(/\s+/g, ' ');
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 /**
@@ -171,59 +285,97 @@ export function rankOpportunitiesLocal(
       const boost = focusBoost.has(c.category) ? 1.08 : 1;
       const score = Math.round(Math.min(100, weight * distanceFactor * boost * 100));
       const travelMinutes = Math.max(4, Math.round(c.distanceMiles * 3));
+      // Heuristic ranking is honest about its certainty: richer grounding
+      // (context, proximity, goal match) earns more, but never model-level sureness.
+      const confidence = Math.min(
+        85,
+        55 + (c.context ? 12 : 0) + (c.distanceMiles <= radius / 2 ? 8 : 0) + (focusBoost.has(c.category) ? 8 : 0),
+      );
+      const evidence = [
+        `${c.distanceMiles.toFixed(1)} mi from you (~${travelMinutes} min)`,
+        ...(c.rating !== undefined
+          ? [`${c.rating.toFixed(1)}★${c.reviewCount ? ` across ${c.reviewCount} reviews` : ' on Google'}`]
+          : []),
+        ...(c.context ? [capitalizeFirst(c.context)] : []),
+        ...(focusBoost.has(c.category) ? [`Matches your focus: ${c.category}`] : []),
+      ].slice(0, 3);
 
       return {
         id: c.id,
         name: c.name,
         category: c.category,
         score,
+        confidence,
+        evidence,
         latitude: c.latitude,
         longitude: c.longitude,
         address: c.address,
         distanceMiles: c.distanceMiles,
         bestTime: CATEGORY_BEST_TIME[c.category],
-        summary: `${c.name} is a strong ${c.category} fit ${c.distanceMiles.toFixed(1)} mi away (~${travelMinutes} min).`,
+        summary: `${c.name} is a strong ${CATEGORY_NOUN[c.category]} prospect ${c.distanceMiles.toFixed(1)} mi away (~${travelMinutes} min).`,
         reasons: buildReasons(c),
         risks: buildRisks(c),
-        recommendedAction: buildAction(c),
-        estimatedValue: CATEGORY_VALUE[c.category],
+        recommendedAction: buildAction(c, profile),
+        // The heuristic ranker doesn't invent dollar figures — only Gemma
+        // estimates value, and only as an explicit rough range.
+        estimatedValue: undefined,
+        phone: c.phone,
+        website: c.website,
+        rating: c.rating,
+        reviewCount: c.reviewCount,
       } satisfies RankedOpportunity;
     })
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.score - a.score)
+    // Heuristic scores shouldn't read as certainty: cap below 100 and break
+    // ties so the list doesn't show a wall of identical "perfect" scores.
+    .map((o, i) => ({ ...o, score: Math.max(35, Math.min(96 - i, o.score)) }));
 }
+
+function capitalizeFirst(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** How each category reads in a sentence. */
+const CATEGORY_NOUN: Record<OpportunityCategory, string> = {
+  recurring: 'standing-account',
+  partnership: 'partnership',
+  event: 'event',
+  direct: 'walk-up',
+};
 
 function buildReasons(c: PlaceCandidate): string[] {
   const base: Record<OpportunityCategory, string[]> = {
-    catering: ['Recurring orders beat one-off walk-ups', 'Corporate budgets pay on time'],
-    partnership: ['Steady built-in foot traffic', 'Shared audience, no ad spend'],
-    event: ['High volume in a short window', 'One yes reaches hundreds of people'],
-    lunch: ['Predictable weekday rush', 'Short drive keeps margins healthy'],
+    recurring: ['A standing arrangement beats one-off jobs', 'Business buyers rebook on a schedule'],
+    partnership: ['Their existing customers become your pipeline', 'Shared audience, no ad spend'],
+    event: ['High volume in a short window', 'One yes reaches a whole crowd'],
+    direct: ['Customers are already gathered there', 'Short drive keeps margins healthy'],
   };
-  const reasons = [...base[c.category]];
-  if (c.context) reasons.unshift(c.context);
-  return reasons.slice(0, 3);
+  // Context now surfaces as evidence; reasons stay the argument itself.
+  return base[c.category].slice(0, 3);
 }
 
 function buildRisks(c: PlaceCandidate): string[] {
   const base: Record<OpportunityCategory, string[]> = {
-    catering: ['May require a minimum order or lead time'],
-    partnership: ['Needs a permission/permit from the venue'],
+    recurring: ['May need approval from a manager or owner'],
+    partnership: ['Needs the venue’s permission or a trial run'],
     event: ['Vendor fee or application may apply'],
-    lunch: ['Competition from nearby options'],
+    direct: ['Competition from options already nearby'],
   };
   return base[c.category];
 }
 
-function buildAction(c: PlaceCandidate): string {
+/** A concrete first move an owner could make today, in their own trade. */
+function buildAction(c: PlaceCandidate, profile: BusinessProfileInput): string {
+  const service = profile.type || 'service';
   switch (c.category) {
-    case 'catering':
-      return `Call ${c.name} and offer a free tasting for their next team lunch.`;
+    case 'recurring':
+      return `Call ${c.name}, ask who books services, and offer a free first ${service} visit.`;
     case 'partnership':
-      return `Walk into ${c.name} and pitch a weekly taco night on their patio.`;
+      return `Walk into ${c.name} and propose a regular on-site ${service} day for their customers.`;
     case 'event':
-      return `Email ${c.name} to ask about their upcoming vendor slots.`;
-    case 'lunch':
-      return `Park near ${c.name} during the weekday rush and hand out samples.`;
+      return `Email ${c.name} about vendor openings at their next event.`;
+    case 'direct':
+      return `Set up near ${c.name} at peak time with a first-visit offer.`;
   }
 }
 
@@ -233,18 +385,28 @@ export function generateOutreachLocal(
   channel: OutreachChannel,
   tone: OutreachTone,
 ): OutreachDraft {
+  // Introduce the owner (a person) speaking for the business (a company).
+  const me = profile.ownerName?.trim();
   const opener: Record<OutreachTone, string> = {
-    friendly: `Hi there! I'm with ${profile.name}, a local ${profile.type} here in ${profile.city}.`,
-    professional: `Hello, I'm reaching out on behalf of ${profile.name}, a ${profile.type} serving ${profile.city}.`,
-    direct: `I run ${profile.name}, a ${profile.type} in ${profile.city}.`,
+    friendly: me
+      ? `Hi there! I'm ${me} with ${profile.name}, a local ${profile.type} here in ${profile.city}.`
+      : `Hi there! I'm with ${profile.name}, a local ${profile.type} here in ${profile.city}.`,
+    professional: me
+      ? `Hello, this is ${me} from ${profile.name}, a ${profile.type} serving ${profile.city}.`
+      : `Hello, I'm reaching out on behalf of ${profile.name}, a ${profile.type} serving ${profile.city}.`,
+    direct: me
+      ? `I'm ${me} — I run ${profile.name}, a ${profile.type} in ${profile.city}.`
+      : `I run ${profile.name}, a ${profile.type} in ${profile.city}.`,
   };
 
-  const ask = `I'd love to explore ${opportunity.category === 'catering' ? 'catering for your team' : `working with ${opportunity.name}`}. ${opportunity.recommendedAction}`;
+  const edge = profile.capabilities[0] ? ` We're known for ${profile.capabilities[0].toLowerCase()}.` : '';
+  const ask = `I'd love to explore working with ${opportunity.name}.${edge} ${opportunity.recommendedAction}`;
+  const signoff = me ? `${me}\n${profile.name}` : profile.name;
 
   const body =
     channel === 'walk-in'
       ? `${opener[tone]} I'm stopping by in person — ${ask}`
-      : `${opener[tone]} ${ask}\n\nWould this week work for a quick chat?\n\n— ${profile.name}`;
+      : `${opener[tone]} ${ask}\n\nWould this week work for a quick chat?\n\n— ${signoff}`;
 
   return {
     channel,

@@ -16,7 +16,7 @@
 
 const BASE_URL = process.env.EXPO_PUBLIC_GEMMA_BASE_URL ?? 'http://localhost:11434';
 const MODEL = process.env.EXPO_PUBLIC_GEMMA_MODEL ?? 'gemma4:e2b-it-qat';
-const CATEGORIES = ['partnership', 'lunch', 'catering', 'event'];
+const CATEGORIES = ['recurring', 'partnership', 'event', 'direct'];
 
 /* --- success criteria (see EVALUATION.md) --------------------------------- */
 const REPEATS = Number(process.env.EVAL_REPEATS ?? 2); // passes per profile → stable rates
@@ -53,9 +53,9 @@ const PROFILES = [
 ];
 
 const CANDIDATES = [
-  { id: 'c1', name: 'Canyon Tech Campus', category: 'lunch', distanceMiles: 2.8, context: '~400 employees' },
+  { id: 'c1', name: 'Canyon Tech Campus', category: 'direct', distanceMiles: 2.8, context: '~400 employees' },
   { id: 'c2', name: 'Slate Canyon Brewing', category: 'partnership', distanceMiles: 1.9, context: 'patio, no kitchen' },
-  { id: 'c3', name: 'Riverwoods Corporate Events', category: 'catering', distanceMiles: 4.6, context: 'all-hands lunches' },
+  { id: 'c3', name: 'Riverwoods Corporate Events', category: 'recurring', distanceMiles: 4.6, context: 'all-hands lunches' },
   { id: 'c4', name: 'Utah Valley Sports Complex', category: 'event', distanceMiles: 5.3, context: 'weekend tournaments' },
 ];
 
@@ -102,10 +102,10 @@ const coerce = (v) => {
   if (typeof v !== 'string') return null;
   const s = v.toLowerCase();
   if (CATEGORIES.includes(s)) return s;
-  if (/cater/.test(s)) return 'catering';
+  if (/recur|contract|account|standing|fleet|cater/.test(s)) return 'recurring';
   if (/partner|collab|venue|brewery|apartment/.test(s)) return 'partnership';
   if (/event|festival|market|game|sport/.test(s)) return 'event';
-  if (/lunch|office|weekday|rush/.test(s)) return 'lunch';
+  if (/direct|walk|lunch|office|weekday|rush|traffic/.test(s)) return 'direct';
   return null;
 };
 
@@ -115,7 +115,7 @@ const analyzePrompt = (p) =>
     'You are an experienced local-business growth consultant.',
     `Business: ${p.name}, a ${p.type} in ${p.city}. Goals: ${p.goals}.`,
     'Analyze where this business should focus to grow.',
-    'JSON shape: {"summary":string,"strengths":string[],"focus":string,"recommendedCategories":("partnership"|"lunch"|"catering"|"event")[]}',
+    'JSON shape: {"summary":string,"strengths":string[],"focus":string,"recommendedCategories":("recurring"|"partnership"|"event"|"direct")[]}',
     JSON_RULES,
   ].join('\n');
 

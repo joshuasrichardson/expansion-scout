@@ -30,13 +30,17 @@ import {
   generateOutreachLocal,
   interviewStepLocal,
   rankOpportunitiesLocal,
+  segmentsFromCategories,
   summarizeInterviewLocal,
 } from './opportunityRanking';
 import {
+  CUSTOMER_SEGMENT_TYPES,
   OPPORTUNITY_CATEGORIES,
   type BusinessAnalysis,
   type BusinessProfileInput,
   type CustomerProfile,
+  type CustomerSegment,
+  type CustomerSegmentType,
   type InferenceMeta,
   type InterviewDecision,
   type InterviewProfile,
@@ -47,6 +51,7 @@ import {
   type OutreachTone,
   type PlaceCandidate,
   type RankedOpportunity,
+  type ReasoningProgress,
   type WithMeta,
 } from './gemmaTypes';
 
@@ -66,17 +71,33 @@ export const GemmaConfig = {
   model: process.env.EXPO_PUBLIC_GEMMA_MODEL ?? 'gemma4:e2b-it-qat',
   /** Set to "false" to force the deterministic fallback (e.g. for a safe demo). */
   enabled: process.env.EXPO_PUBLIC_GEMMA_ENABLED !== 'false',
-  /** Per-call ceiling. Cold start loads the model (~10–15s), so keep generous. */
-  timeoutMs: Number(process.env.EXPO_PUBLIC_GEMMA_TIMEOUT_MS ?? 22000),
+  /**
+   * Per-call ceiling. Cold start loads the model (~10–15s), and back-to-back
+   * calls (interview summary → analysis) queue on one runtime, so keep generous.
+   */
+  timeoutMs: Number(process.env.EXPO_PUBLIC_GEMMA_TIMEOUT_MS ?? 30000),
 } as const;
 
 /* -------------------------------------------------------------------------- */
 /* Transport                                                                  */
 /* -------------------------------------------------------------------------- */
 
+export interface GenerateOpts {
+  maxTokens?: number;
+  temperature?: number;
+  /**
+   * Streams the model's output as it is generated: the full text so far plus how
+   * many token pieces have arrived. This is what lets the thinking screens show
+   * reasoning stages the moment the model reaches them, instead of a canned
+   * animation. Optional — transports may deliver everything in one final call
+   * if the environment can't stream.
+   */
+  onToken?: (textSoFar: string, tokenCount: number) => void;
+}
+
 export interface GemmaTransport {
   /** Returns raw model text (expected to be JSON) plus how long it took. */
-  generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }): Promise<{
+  generate(prompt: string, opts?: GenerateOpts): Promise<{
     text: string;
     latencyMs: number;
   }>;
@@ -92,7 +113,8 @@ export class OllamaTransport implements GemmaTransport {
     private readonly timeoutMs = GemmaConfig.timeoutMs,
   ) {}
 
-  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+  async generate(prompt: string, opts?: GenerateOpts) {
+    if (opts?.onToken) return this.generateStreaming(prompt, opts);
     const started = nowMs();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -101,16 +123,7 @@ export class OllamaTransport implements GemmaTransport {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
-        body: JSON.stringify({
-          model: this.model,
-          prompt,
-          stream: false,
-          format: 'json', // constrain output to a JSON object
-          options: {
-            temperature: opts?.temperature ?? 0.4,
-            num_predict: opts?.maxTokens ?? 512,
-          },
-        }),
+        body: JSON.stringify(this.requestBody(prompt, opts, false)),
       });
       if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
       const json = (await res.json()) as { response?: string };
@@ -118,6 +131,86 @@ export class OllamaTransport implements GemmaTransport {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Streaming path: Ollama's NDJSON stream (`"stream": true` — one JSON line per
+   * token) read progressively via XMLHttpRequest, since React Native's fetch
+   * can't stream response bodies. If the environment delivers the body only at
+   * the end, the same code still resolves correctly — the "stream" just arrives
+   * as one late chunk, and the caller's stage events collapse gracefully.
+   */
+  private generateStreaming(prompt: string, opts: GenerateOpts): Promise<{ text: string; latencyMs: number }> {
+    const started = nowMs();
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const timer = setTimeout(() => {
+        xhr.abort();
+        reject(new Error(`Timed out after ${this.timeoutMs}ms.`));
+      }, this.timeoutMs);
+
+      let consumed = 0; // chars of responseText already parsed
+      let carry = ''; // trailing partial NDJSON line
+      let text = '';
+      let pieces = 0;
+
+      const takeLine = (line: string) => {
+        if (!line.trim()) return;
+        try {
+          const j = JSON.parse(line) as { response?: string };
+          if (typeof j.response === 'string' && j.response) {
+            text += j.response;
+            pieces += 1;
+          }
+        } catch {
+          // Partial or malformed line — ignore; the final text is re-validated anyway.
+        }
+      };
+
+      const drain = () => {
+        const full = xhr.responseText ?? '';
+        if (full.length <= consumed) return;
+        carry += full.slice(consumed);
+        consumed = full.length;
+        const lines = carry.split('\n');
+        carry = lines.pop() ?? '';
+        const before = pieces;
+        for (const line of lines) takeLine(line);
+        if (pieces > before) opts.onToken?.(text, pieces);
+      };
+
+      xhr.open('POST', `${this.baseUrl}/api/generate`);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.onprogress = drain;
+      xhr.onload = () => {
+        drain();
+        takeLine(carry);
+        clearTimeout(timer);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve({ text, latencyMs: Math.round(nowMs() - started) });
+        } else {
+          reject(new Error(`Ollama HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error('Ollama request failed'));
+      };
+      xhr.send(JSON.stringify(this.requestBody(prompt, opts, true)));
+    });
+  }
+
+  private requestBody(prompt: string, opts: GenerateOpts | undefined, stream: boolean) {
+    return {
+      model: this.model,
+      prompt,
+      stream,
+      format: 'json', // constrain output to a JSON object
+      options: {
+        temperature: opts?.temperature ?? 0.4,
+        num_predict: opts?.maxTokens ?? 512,
+      },
+    };
   }
 
   async probe() {
@@ -163,7 +256,7 @@ class AutoTransport implements GemmaTransport {
     return null;
   }
 
-  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+  async generate(prompt: string, opts?: GenerateOpts) {
     const t = await this.pick();
     if (!t) throw new Error('No on-device transport available');
     try {
@@ -253,13 +346,81 @@ export async function warmUpGemma(): Promise<boolean> {
 /* -------------------------------------------------------------------------- */
 
 export async function analyzeBusiness(
-  profile: BusinessProfileInput,
+  profile: BusinessProfileInput | InterviewProfile,
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<BusinessAnalysis>> {
+  onProgress?.({ type: 'step', label: `Reading ${profile.name} — ${profile.type} in ${profile.city}` });
   return run(
     ANALYZE_PROMPT(profile),
     (raw) => validateAnalysis(raw),
     () => analyzeBusinessLocal(profile),
-    { maxTokens: 400 },
+    {
+      maxTokens: 600,
+      progress: onProgress,
+      requestLabel: `Briefing Gemma 4 on your goals: ${firstGoal(profile)}`,
+      onToken: onProgress ? analysisStreamWatcher(profile, onProgress) : undefined,
+    },
+  );
+}
+
+/** The owner's lead goal, shortened for a progress line. */
+function firstGoal(p: BusinessProfileInput): string {
+  const goal = p.goals[0]?.trim().replace(/\.$/, '');
+  if (!goal) return 'grow revenue';
+  return goal.length > 42 ? `${goal.slice(0, 39)}…` : goal.toLowerCase();
+}
+
+/**
+ * Turns a raw token stream into live reasoning steps: each stage fires when its
+ * JSON field ACTUALLY appears in the stream — i.e. when the model genuinely
+ * reached that part of its answer. Optionally extracts values matching
+ * `noteField` (e.g. segment labels) and announces each as a note the moment the
+ * model names it. Nothing here is on a timer.
+ */
+function keyStageWatcher(
+  stages: { key: string; label: string }[],
+  progress: ReasoningProgress,
+  noteField?: { afterKey: string; field: string },
+): (textSoFar: string, tokenCount: number) => void {
+  const fired = new Set<string>();
+  const noted = new Set<string>();
+  const noteRe = noteField ? new RegExp(`"${noteField.field}"\\s*:\\s*"([^"]{3,60})"`, 'g') : null;
+
+  return (text, tokenCount) => {
+    for (const stage of stages) {
+      if (!fired.has(stage.key) && text.includes(`"${stage.key}"`)) {
+        fired.add(stage.key);
+        progress({ type: 'step', label: stage.label });
+      }
+    }
+    if (noteField && noteRe && fired.has(noteField.afterKey)) {
+      for (const m of text.matchAll(noteRe)) {
+        if (!noted.has(m[1])) {
+          noted.add(m[1]);
+          progress({ type: 'note', label: m[1] });
+        }
+      }
+    }
+    progress({ type: 'tokens', count: tokenCount });
+  };
+}
+
+/** The analysis call's stages, phrased for THIS business. */
+function analysisStreamWatcher(
+  profile: BusinessProfileInput | InterviewProfile,
+  progress: ReasoningProgress,
+): (textSoFar: string, tokenCount: number) => void {
+  return keyStageWatcher(
+    [
+      { key: 'summary', label: `Sizing up ${profile.name} as a ${profile.type}` },
+      { key: 'strengths', label: `Weighing what ${profile.name} does best` },
+      { key: 'focus', label: 'Choosing today’s single mission' },
+      { key: 'recommendedCategories', label: 'Picking the revenue shapes worth chasing' },
+      { key: 'targetSegments', label: 'Deciding exactly who to look for' },
+    ],
+    progress,
+    // Segment labels only exist inside targetSegments — announce each new one.
+    { afterKey: 'targetSegments', field: 'label' },
   );
 }
 
@@ -272,12 +433,28 @@ export async function analyzeBusiness(
  */
 export async function interviewStep(
   history: InterviewTurn[],
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<InterviewDecision>> {
+  const n = history.length;
   return run(
     INTERVIEW_STEP_PROMPT(history),
     (raw) => validateDecision(raw),
     () => interviewStepLocal(history),
-    { maxTokens: 200, temperature: 0.4 },
+    {
+      maxTokens: 200,
+      temperature: 0.4,
+      progress: onProgress,
+      requestLabel: `Rereading your ${n} answer${n === 1 ? '' : 's'} for the biggest gap`,
+      onToken: onProgress
+        ? keyStageWatcher(
+            [
+              { key: 'done', label: 'Judging whether it can already picture your customer' },
+              { key: 'question', label: 'Writing the one question that fills the gap' },
+            ],
+            onProgress,
+          )
+        : undefined,
+    },
   );
 }
 
@@ -290,12 +467,31 @@ export async function interviewStep(
 export async function summarizeInterview(
   history: InterviewTurn[],
   base: BusinessProfileInput,
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<InterviewProfile>> {
   return run(
     INTERVIEW_SUMMARY_PROMPT(history, base),
     (raw) => validateProfile(raw, base),
     () => summarizeInterviewLocal(history, base),
-    { maxTokens: 500, temperature: 0.3 },
+    {
+      maxTokens: 500,
+      temperature: 0.3,
+      progress: onProgress,
+      requestLabel: `Distilling your ${history.length} answers on-device`,
+      onToken: onProgress
+        ? keyStageWatcher(
+            [
+              { key: 'description', label: `Restating what ${base.name} wants to grow` },
+              { key: 'goals', label: 'Pinning down your goals' },
+              { key: 'capabilities', label: `Noting what ${base.name} is great at` },
+              { key: 'customer', label: 'Sketching your ideal customer' },
+              { key: 'locations', label: 'Listing where those customers gather' },
+              { key: 'outreach', label: 'Choosing how you’d reach them' },
+            ],
+            onProgress,
+          )
+        : undefined,
+    },
   );
 }
 
@@ -310,23 +506,30 @@ export async function rankOpportunities(
   profile: BusinessProfileInput,
   analysis: BusinessAnalysis,
   candidates: PlaceCandidate[],
+  onProgress?: ReasoningProgress,
 ): Promise<WithMeta<RankedOpportunity[]>> {
   const baseline = rankOpportunitiesLocal(profile, analysis, candidates);
   const model = GemmaConfig.model;
+  const total = candidates.length;
 
   if (!GemmaConfig.enabled) {
+    onProgress?.({ type: 'done', source: 'fallback', latencyMs: 0, label: `Ranked ${total} places deterministically on-device` });
     return { data: baseline, meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
   }
 
   let latencyMs = 0;
   try {
+    onProgress?.({ type: 'step', label: `Gemma is scoring ${total} nearby places against your goals` });
     const { text, latencyMs: ms } = await transport.generate(RANK_PROMPT(profile, analysis, candidates), {
-      maxTokens: 900,
+      maxTokens: 1600, // room for reasons + evidence + confidence per candidate
       temperature: 0.3, // lower temp ⇒ more reliable JSON from the small model
+      onToken: onProgress ? rankStreamWatcher(total, onProgress) : undefined,
     });
     latencyMs = ms;
+    onProgress?.({ type: 'step', label: 'Grounding every score in real place data' });
     const ranked = validateRanked(parseJson(text), candidates); // grounded subset, may be []
     if (!ranked.length) {
+      onProgress?.({ type: 'done', source: 'fallback', latencyMs, label: 'No usable model ranking — ordered deterministically on-device' });
       return { data: baseline, meta: meta('fallback', model, latencyMs, false, 'Model returned no usable ranking.') };
     }
     const merged = mergeRankings(baseline, ranked);
@@ -334,10 +537,25 @@ export async function rankOpportunities(
       ranked.length < candidates.length
         ? `Gemma ranked ${ranked.length}/${candidates.length}; remainder ordered on-device.`
         : undefined;
+    onProgress?.({ type: 'done', source: 'gemma', latencyMs, label: `Ranked ${total} places in ${(latencyMs / 1000).toFixed(1)}s` });
     return { data: merged, meta: meta('gemma', model, latencyMs, true, note) };
   } catch (err) {
+    onProgress?.({ type: 'done', source: 'fallback', latencyMs, label: 'Gemma unavailable — ordered deterministically on-device' });
     return { data: baseline, meta: meta('fallback', model, latencyMs, false, describeError(err)) };
   }
+}
+
+/** Live "scored i of N" counter — each candidate's `"id"` appearing in the stream is one place reasoned about. */
+function rankStreamWatcher(total: number, progress: ReasoningProgress): (textSoFar: string, tokenCount: number) => void {
+  let lastCount = 0;
+  return (text, tokenCount) => {
+    const count = Math.min(total, (text.match(/"id"\s*:/g) ?? []).length);
+    if (count > lastCount) {
+      lastCount = count;
+      progress({ type: 'update', label: `Gemma is scoring nearby places — ${count} of ${total} reasoned` });
+    }
+    progress({ type: 'tokens', count: tokenCount });
+  };
 }
 
 /** Prefer Gemma's entry per id, backfill with the deterministic one, re-sort. */
@@ -364,28 +582,58 @@ export async function generateOutreach(
 /* Orchestration: try Gemma → validate → else deterministic fallback          */
 /* -------------------------------------------------------------------------- */
 
+interface RunOpts extends GenerateOpts {
+  /** Live progress sink; stage events below only fire when this is set. */
+  progress?: ReasoningProgress;
+  /** Label for the "prompt sent, waiting for the model" stage. */
+  requestLabel?: string;
+}
+
 async function run<T>(
   prompt: string,
   validate: (raw: unknown) => T,
   fallback: () => T,
-  opts?: { maxTokens?: number; temperature?: number },
+  opts?: RunOpts,
 ): Promise<WithMeta<T>> {
   const model = GemmaConfig.model;
+  const progress = opts?.progress;
 
   if (!GemmaConfig.enabled) {
-    return { data: fallback(), meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
+    progress?.({ type: 'step', label: 'Gemma disabled — using the deterministic on-device planner' });
+    const data = fallback();
+    progress?.({ type: 'done', source: 'fallback', latencyMs: 0, label: 'Planned deterministically on-device' });
+    return { data, meta: meta('fallback', model, 0, false, 'Gemma disabled via config.') };
   }
 
   let latencyMs = 0;
   try {
+    progress?.({ type: 'step', label: opts?.requestLabel ?? 'Sending the brief to Gemma 4 on this device' });
     const { text, latencyMs: ms } = await transport.generate(prompt, opts);
     latencyMs = ms;
+    progress?.({ type: 'step', label: 'Checking the answer against the strict schema' });
     const parsed = parseJson(text);
     const data = validate(parsed); // throws on malformed / off-contract output
+    progress?.({
+      type: 'done',
+      source: 'gemma',
+      latencyMs,
+      label: `Reasoned on-device in ${(latencyMs / 1000).toFixed(1)}s`,
+    });
     return { data, meta: meta('gemma', model, latencyMs, true) };
   } catch (err) {
+    progress?.({
+      type: 'step',
+      label: `Gemma unavailable (${describeError(err).replace(/\.$/, '').toLowerCase()}) — switching to the deterministic on-device planner`,
+    });
+    const data = fallback();
+    progress?.({
+      type: 'done',
+      source: 'fallback',
+      latencyMs,
+      label: 'Planned deterministically on-device — no data left this device',
+    });
     return {
-      data: fallback(),
+      data,
       meta: meta('fallback', model, latencyMs, false, describeError(err)),
     };
   }
@@ -435,12 +683,67 @@ export function coerceCategory(v: unknown): OpportunityCategory | null {
   const s = v.toLowerCase();
   const exact = OPPORTUNITY_CATEGORIES.find((c) => c === s);
   if (exact) return exact;
-  if (/cater/.test(s)) return 'catering';
-  if (/partner|collab|venue|brewery|apartment/.test(s)) return 'partnership';
-  if (/event|festival|market|game|sport/.test(s)) return 'event';
-  if (/lunch|office|weekday|rush/.test(s)) return 'lunch';
+  if (/recur|contract|account|standing|fleet|cater|subscription|retainer|b2b/.test(s)) return 'recurring';
+  if (/partner|collab|venue|referr|co-?market|brewery|apartment|salon|gym/.test(s)) return 'partnership';
+  if (/event|festival|market|tournament|game|sport|fair|expo/.test(s)) return 'event';
+  if (/direct|walk-?up|foot|traffic|lunch|office|weekday|rush|retail|consumer/.test(s)) return 'direct';
   return null;
 }
+
+/** Coerce free-text segment-type guesses onto our closed archetype set. */
+export function coerceSegmentType(v: unknown): CustomerSegmentType | null {
+  if (typeof v !== 'string') return null;
+  const s = v.toLowerCase();
+  const exact = CUSTOMER_SEGMENT_TYPES.find((t) => t === s);
+  if (exact) return exact;
+  if (/apartment|resident|hoa|housing|community|neighborhood/.test(s)) return 'residential-community';
+  if (/event|venue|resort|wedding|sport|complex|arena/.test(s)) return 'event-venue';
+  if (/market|festival|fair|gathering|tournament|street/.test(s)) return 'public-gathering';
+  if (/partner|nonprofit|school|church|org|club/.test(s)) return 'partner-org';
+  if (/office|business|brewery|bar|retail|store|campus|company/.test(s)) return 'physical-business';
+  return null;
+}
+
+/** Coerce free-text reach/channel guesses onto our closed outreach-channel set. */
+export function coerceReach(v: unknown): OutreachChannel | null {
+  if (typeof v !== 'string') return null;
+  const s = v.toLowerCase();
+  if (/walk|in.?person|visit|drop.?by|door/.test(s)) return 'walk-in';
+  if (/phone|call|text|sms/.test(s)) return 'phone';
+  if (/email|mail|message|form/.test(s)) return 'email';
+  return null;
+}
+
+/** Default reach for a segment type, when the model omits or garbles it. */
+const SEGMENT_DEFAULT_REACH: Record<CustomerSegmentType, OutreachChannel> = {
+  'physical-business': 'walk-in',
+  'residential-community': 'phone',
+  'event-venue': 'email',
+  'public-gathering': 'phone',
+  'partner-org': 'walk-in',
+};
+
+/**
+ * Default category per segment type — observed failure: with interview context
+ * in the prompt, E2B reliably emits label/type/discovery but OMITS `category`.
+ * Requiring it dropped every real segment (templates silently backfilled), so
+ * the archetype now implies the revenue shape instead.
+ */
+const SEGMENT_DEFAULT_CATEGORY: Record<CustomerSegmentType, OpportunityCategory> = {
+  'physical-business': 'recurring', // offices/fleets ⇒ standing accounts
+  'residential-community': 'recurring',
+  'event-venue': 'event',
+  'public-gathering': 'event',
+  'partner-org': 'partnership',
+};
+
+/** Inverse fallback: a usable category but a garbled type. */
+const CATEGORY_DEFAULT_TYPE: Record<OpportunityCategory, CustomerSegmentType> = {
+  recurring: 'physical-business',
+  partnership: 'partner-org',
+  event: 'public-gathering',
+  direct: 'physical-business',
+};
 
 function clampScore(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(v);
@@ -457,12 +760,65 @@ export function validateAnalysis(raw: unknown): BusinessAnalysis {
   const recommended = asStringArray(o.recommendedCategories, 4)
     .map(coerceCategory)
     .filter((c): c is OpportunityCategory => c !== null);
+  const recommendedCategories: OpportunityCategory[] = recommended.length
+    ? dedupe(recommended)
+    : ['recurring', 'partnership'];
   return {
     summary,
     focus,
     strengths: asStringArray(o.strengths, 4),
-    recommendedCategories: recommended.length ? dedupe(recommended) : ['catering', 'partnership'],
+    recommendedCategories,
+    targetSegments: validateSegments(o.targetSegments, recommendedCategories),
   };
+}
+
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+/**
+ * Parse one model segment. A missing/garbled type or category is backfilled
+ * from the other (each implies a sensible default of its counterpart); the
+ * segment is dropped only when it has no label or NEITHER closed-set field
+ * survives coercion — keeping Gemma's real reasoning on screen instead of
+ * silently swapping in templates.
+ */
+function parseSegment(raw: unknown): CustomerSegment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const coercedType = coerceSegmentType(o.type);
+  const coercedCategory = coerceCategory(o.category);
+  const label = asString(o.label);
+  if (!label || (!coercedType && !coercedCategory)) return null;
+  const type = coercedType ?? CATEGORY_DEFAULT_TYPE[coercedCategory!];
+  const category = coercedCategory ?? SEGMENT_DEFAULT_CATEGORY[type];
+  return {
+    label,
+    type,
+    whoTheyAre: asString(o.whoTheyAre),
+    discovery: asString(o.discovery),
+    mapsQuery: asString(o.mapsQuery) || undefined,
+    reach: coerceReach(o.reach) ?? SEGMENT_DEFAULT_REACH[type],
+    why: asString(o.why),
+    category,
+  };
+}
+
+/**
+ * Validate the model's target segments; if none survive, synthesize a sensible
+ * set from the recommended categories so the "who to look for" field is never
+ * empty (the thinking screen always has cards to reveal).
+ */
+export function validateSegments(
+  raw: unknown,
+  recommendedCategories: OpportunityCategory[],
+): CustomerSegment[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  const parsed = arr
+    .map(parseSegment)
+    .filter((s): s is CustomerSegment => s !== null)
+    .slice(0, 5);
+  return parsed.length ? parsed : segmentsFromCategories(recommendedCategories);
 }
 
 /** A safe next question when the model flags "not done" but omits one. */
@@ -495,10 +851,11 @@ export function validateProfile(raw: unknown, base: BusinessProfileInput): Inter
   const goals = asStringArray(o.goals, 4);
   const capabilities = asStringArray(o.capabilities, 4);
 
-  // Geo/name always come from `base` — the model only supplies the soft fields.
+  // Identity (name, type) and geo always come from `base` — observed failure:
+  // the model rewrote a pressure washer's type to "B2B Maintenance Contracts".
+  // The model only supplies the soft fields below.
   return {
     ...base,
-    type: typeof o.type === 'string' && o.type.trim() ? o.type.trim() : base.type,
     description:
       typeof o.description === 'string' && o.description.trim() ? o.description.trim() : base.description,
     availability:
@@ -529,15 +886,23 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
       const category = coerceCategory(o.category) ?? source.category;
       const reasons = asStringArray(o.reasons, 3);
       if (!reasons.length) return null; // a ranking with no reasoning is worthless
+      // Evidence must be verifiable: keep the model's lines only when they echo
+      // the grounding we gave it; always anchor with the known facts.
+      const evidence = dedupe([
+        ...groundedEvidence(asStringArray(o.evidence, 3), source),
+        ...factEvidence(source),
+      ]).slice(0, 3);
       const result: RankedOpportunity = {
         id: source.id,
         name: source.name,
         category,
         score: clampScore(o.score),
+        confidence: clampScore(o.confidence ?? 65),
         latitude: source.latitude,
         longitude: source.longitude,
         address: source.address,
         distanceMiles: source.distanceMiles,
+        evidence,
         bestTime: typeof o.bestTime === 'string' && o.bestTime.trim() ? o.bestTime.trim() : 'Flexible',
         summary: typeof o.summary === 'string' ? o.summary.trim() : `${source.name} — ${category}`,
         reasons,
@@ -547,6 +912,10 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
             ? o.recommendedAction.trim()
             : `Reach out to ${source.name}.`,
         estimatedValue: typeof o.estimatedValue === 'string' ? o.estimatedValue : undefined,
+        phone: source.phone,
+        website: source.website,
+        rating: source.rating,
+        reviewCount: source.reviewCount,
       };
       return result;
     })
@@ -555,6 +924,37 @@ export function validateRanked(raw: unknown, candidates: PlaceCandidate[]): Rank
 
   // May be empty (model grounded nothing) — the caller merges/backfills.
   return ranked;
+}
+
+/**
+ * Grounding guard for evidence lines: keep a model-written line only when it
+ * overlaps the data we actually gave the model about this candidate. This is
+ * what lets the UI present "backed by" facts without trusting free generation.
+ */
+function groundedEvidence(lines: string[], source: PlaceCandidate): string[] {
+  const grounding =
+    `${source.name} ${source.context ?? ''} ${source.category} ${source.address} ` +
+    `${source.rating ?? ''} ${source.reviewCount ?? ''} rating reviews stars`.toLowerCase();
+  return lines.filter((line) => {
+    const words = line.toLowerCase().match(/[a-z]{5,}/g) ?? [];
+    return words.some((w) => grounding.includes(w));
+  });
+}
+
+/** The always-true facts about a candidate, as evidence lines. */
+function factEvidence(source: PlaceCandidate): string[] {
+  const facts = [`${source.distanceMiles.toFixed(1)} mi from you`];
+  if (source.rating !== undefined) {
+    facts.push(
+      `${source.rating.toFixed(1)}★${source.reviewCount ? ` across ${source.reviewCount} reviews` : ' on Google'}`,
+    );
+  }
+  if (source.context) facts.push(capitalizeFirst(source.context));
+  return facts;
+}
+
+function capitalizeFirst(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 export function validateOutreach(
@@ -580,15 +980,39 @@ export function validateOutreach(
 const JSON_RULES =
   'Respond with ONLY a single minified JSON value. No markdown, no prose, no explanation of your reasoning.';
 
-function ANALYZE_PROMPT(p: BusinessProfileInput): string {
+/**
+ * The customer taxonomy Gemma classifies prospects into — keyed by HOW each kind
+ * is discovered and reached, so a discovery strategy + outreach channel follow
+ * from the type. Kept compact and closed so the small model stays on-contract.
+ */
+const CUSTOMER_TAXONOMY = [
+  'physical-business (offices, breweries, retail — found on Maps, reached by walk-in/phone)',
+  'residential-community (apartments, HOAs — found on Maps, reached via property manager)',
+  'event-venue (sports complexes, resorts, wedding venues — found on Maps/listings, reached by email/phone)',
+  'public-gathering (markets, festivals, tournaments — found via event calendars/social, reached via organizer)',
+  'partner-org (complementary local orgs to co-market with — found on Maps, reached by walk-in)',
+].join(' · ');
+
+function ANALYZE_PROMPT(p: BusinessProfileInput | InterviewProfile): string {
+  const customer = 'customer' in p ? p.customer : undefined;
   return [
-    'You are an experienced local-business growth consultant.',
+    `You are an experienced growth consultant who has helped many businesses like this one. Think like an owner-operator: concrete places, real buyers, this week.`,
     `Business: ${p.name}, a ${p.type} in ${p.city}. Serves within ${p.serviceRadiusMiles} miles.`,
     p.availability ? `Availability: ${p.availability}.` : '',
-    `Goals: ${p.goals.join('; ') || 'grow revenue'}.`,
-    `Capabilities: ${p.capabilities.join('; ') || 'core service'}.`,
-    'Analyze where this business should focus to grow.',
-    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("partnership"|"lunch"|"catering"|"event")[]}',
+    `Owner's goals: ${p.goals.join('; ') || 'grow revenue'}.`,
+    `What they're great at: ${p.capabilities.join('; ') || 'core service'}.`,
+    customer
+      ? `Ideal customer so far: ${customer.description}. Buying signals: ${customer.signals.join('; ')}. Gathers at: ${customer.locations.join(', ')}.`
+      : '',
+    `Analyze where a ${p.type} with these strengths should focus to hit these goals. "focus" must be ONE concrete mission for today: start with an action verb, name the buyer type and a countable target, and make it specific to THIS business — no generic phrasing, and do not copy wording from these instructions.`,
+    'Then decide WHAT KINDS OF CUSTOMERS to look for. Every segment must be specific to a ' +
+      p.type +
+      " — name the kind of place or buyer, why they need THIS service, and why they'd pay repeatedly. Classify each into exactly one type from this taxonomy, and give its discovery method (how to FIND them) and reach channel (how to CONTACT them):",
+    CUSTOMER_TAXONOMY,
+    'Return 3–5 target segments, best-first. Rank segments that serve the owner\'s stated goals highest (recurring goals ⇒ recurring segments first).',
+    'Category meanings: recurring = standing accounts/contracts; partnership = venues/orgs to co-serve or co-market with; event = high-volume gatherings; direct = high-traffic spots to serve individuals.',
+    '"type" is one of: physical-business|residential-community|event-venue|public-gathering|partner-org. "reach" is one of: walk-in|phone|email. "category" is one of: recurring|partnership|event|direct. "mapsQuery" is the literal 2–5 word phrase to type into Google Maps to find this segment nearby (a kind of place, e.g. "property management offices" — never an instruction). Keep every string under 14 words.',
+    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("recurring"|"partnership"|"event"|"direct")[],"targetSegments":[{"label":string,"type":string,"whoTheyAre":string,"discovery":string,"mapsQuery":string,"reach":string,"why":string,"category":string}]}',
     JSON_RULES,
   ]
     .filter(Boolean)
@@ -633,8 +1057,8 @@ function INTERVIEW_SUMMARY_PROMPT(history: InterviewTurn[], base: BusinessProfil
     'Interview:',
     transcript(history),
     'Infer the ideal-customer picture that will drive searches for real nearby places. "locations" must be concrete, searchable place types (e.g. "office parks", "breweries with patios", "weekend sports tournaments").',
-    'Do NOT output city, coordinates, or radius — those are already known. Keep every string under 16 words.',
-    'JSON shape: {"type":string,"description":string,"availability":string,"goals":string[2..3],"capabilities":string[2..3],"customer":{"description":string,"signals":string[2..3],"locations":string[3..5],"outreach":string[2..3]}}',
+    'Do NOT output the owner name, business name, type, city, coordinates, or radius — those are already known. Keep every string under 16 words.',
+    'JSON shape: {"description":string,"availability":string,"goals":string[2..3],"capabilities":string[2..3],"customer":{"description":string,"signals":string[2..3],"locations":string[3..5],"outreach":string[2..3]}}',
     JSON_RULES,
   ].join('\n');
 }
@@ -650,14 +1074,16 @@ function RANK_PROMPT(
     category: c.category,
     distanceMiles: Number(c.distanceMiles.toFixed(1)),
     context: c.context ?? '',
+    ...(c.rating !== undefined ? { rating: c.rating, reviews: c.reviewCount ?? 0 } : {}),
   }));
   return [
-    'You are a local-business growth consultant ranking nearby opportunities.',
-    `Business: ${p.name} (${p.type}) in ${p.city}. Focus: ${a.focus}.`,
+    `You are a growth consultant ranking nearby opportunities for a ${p.type}. Think like an operator: who is the buyer at each place, what exactly do they buy, how does the first sale happen.`,
+    `Business: ${p.name} (${p.type}) in ${p.city}. Today's focus: ${a.focus}.`,
+    `Owner's goals: ${p.goals.join('; ') || 'grow revenue'}. Great at: ${p.capabilities.join('; ') || 'core service'}.`,
     `Candidates (JSON): ${JSON.stringify(list)}`,
-    `Output EXACTLY ${candidates.length} objects — one for every id: [${candidates.map((c) => c.id).join(', ')}]. Omitting any id is an error. Order them best-first. Use ONLY the given id/category — never invent places.`,
-    'For each: score 0–100, "bestTime", a one-line "summary", TWO short "reasons", ONE "risk", one "recommendedAction", and an "estimatedValue". Keep every string under 14 words.',
-    'JSON shape: {"opportunities":[{"id":string,"category":string,"score":number,"bestTime":string,"summary":string,"reasons":string[2],"risks":string[1],"recommendedAction":string,"estimatedValue":string}]}',
+    `Output EXACTLY ${candidates.length} objects — one for every id: [${candidates.map((c) => c.id).join(', ')}]. Omitting any id is an error. Order them best-first — candidates that serve the owner's goals rank higher. Use ONLY the given id/category — never invent places.`,
+    'For each: score 0–100; "confidence" 0–100 (how sure you are given the data — be honest, lower it when the context is thin); "bestTime" (day + time window when the buyer is reachable); a one-line "summary" naming WHO buys and WHAT they buy; TWO short "reasons" (why it fits THIS business and its goals); TWO "evidence" lines quoting only facts from the candidate data above (distance, context) — never invented numbers; ONE "risk"; one "recommendedAction" that is a first move an owner could do TODAY — name the person to ask for and the specific offer to lead with (e.g. "Ask the fleet manager; offer one free demo on their dirtiest van"); and "estimatedValue" as a conservative dollar range with a period (e.g. "$300–600/mo"). Keep every string under 16 words.',
+    'JSON shape: {"opportunities":[{"id":string,"category":string,"score":number,"confidence":number,"bestTime":string,"summary":string,"reasons":string[2],"evidence":string[2],"risks":string[1],"recommendedAction":string,"estimatedValue":string}]}',
     JSON_RULES,
   ].join('\n');
 }
@@ -668,16 +1094,33 @@ function OUTREACH_PROMPT(
   channel: OutreachChannel,
   tone: OutreachTone,
 ): string {
+  const format =
+    channel === 'email'
+      ? 'a short email (under 120 words): specific subject, one-line who-we-are, the concrete offer, one low-friction ask with a day/time.'
+      : channel === 'phone'
+        ? 'a 30-second call script: intro line, the concrete offer, one question to land a specific next step.'
+        : 'a natural in-person opener (2–4 sentences): who you are, the concrete offer, and the ask.';
+  // The SENDER is the owner (a person) speaking for the business (a company).
+  // Without this split the small model writes "I'm <CompanyName> from <service>".
+  const sender = p.ownerName
+    ? `You are ${p.ownerName}, owner of ${p.name} (a ${p.type} in ${p.city}).`
+    : `You are the owner of ${p.name}, a ${p.type} in ${p.city}.`;
   return [
-    `You are drafting a ${tone} ${channel} outreach message for a local business owner.`,
-    `From: ${p.name}, a ${p.type} in ${p.city}.`,
-    `To: ${o.name} (${o.category}). Goal: ${o.recommendedAction}`,
-    'Keep it short and human. Use ONLY facts given above — do not invent names, numbers, or offers.',
+    `You are drafting a ${tone} ${channel} outreach message for a local business owner. Write ${format}`,
+    sender,
+    p.ownerName
+      ? `Introduce yourself as ${p.ownerName} from ${p.name}. Never use the company name "${p.name}" as if it were your personal name.`
+      : `Introduce yourself as the owner of ${p.name}. Never present the company name as a person's name.`,
+    p.capabilities[0] ? `Your edge: ${p.capabilities[0]}.` : '',
+    `To: ${o.name} (${o.category}). The move: ${o.recommendedAction}`,
+    'Lead with what THEY get, not what you want. Make the ask easy to say yes to (a free sample/demo/trial beats a contract). Use ONLY facts given above — do not invent names, numbers, discounts, or offers.',
     channel === 'email'
       ? 'JSON shape: {"subject":string,"body":string}'
       : 'JSON shape: {"body":string}',
     JSON_RULES,
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /* -------------------------------------------------------------------------- */

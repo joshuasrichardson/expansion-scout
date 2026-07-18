@@ -15,7 +15,7 @@
 
 import { Platform } from 'react-native';
 
-import type { GemmaTransport } from './gemma';
+import type { GemmaTransport, GenerateOpts } from './gemma';
 import { isModelDownloaded, modelFileUri } from './modelManager';
 
 type LlamaModule = typeof import('llama.rn');
@@ -87,7 +87,7 @@ export class LlamaTransport implements GemmaTransport {
     }
   }
 
-  async generate(prompt: string, opts?: { maxTokens?: number; temperature?: number }) {
+  async generate(prompt: string, opts?: GenerateOpts) {
     const started = Date.now();
     const ctx = await this.getContext();
     if (!ctx) throw new Error(this.detail || 'llama.rn context unavailable');
@@ -98,13 +98,30 @@ export class LlamaTransport implements GemmaTransport {
       ctx.stopCompletion().catch(() => {});
     }, LlamaConfig.timeoutMs);
 
+    // Stream tokens straight out of llama.cpp as they're sampled — the realest
+    // possible "watch it think" signal (in-process, no network involved at all).
+    let streamed = '';
+    let pieces = 0;
+    const onPartial = opts?.onToken
+      ? (data: { token?: string }) => {
+          if (typeof data?.token === 'string' && data.token) {
+            streamed += data.token;
+            pieces += 1;
+            opts.onToken?.(streamed, pieces);
+          }
+        }
+      : undefined;
+
     try {
-      const res = await ctx.completion({
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' }, // constrain to a JSON object
-        n_predict: opts?.maxTokens ?? 512,
-        temperature: opts?.temperature ?? 0.4,
-      });
+      const res = await ctx.completion(
+        {
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' }, // constrain to a JSON object
+          n_predict: opts?.maxTokens ?? 512,
+          temperature: opts?.temperature ?? 0.4,
+        },
+        onPartial,
+      );
       if (timedOut) throw new Error(`Timed out after ${LlamaConfig.timeoutMs}ms`);
       const text = (res.text ?? res.content ?? '').trim();
       if (!text) throw new Error('Empty completion');

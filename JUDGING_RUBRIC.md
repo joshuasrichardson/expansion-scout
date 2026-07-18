@@ -105,7 +105,7 @@ silently runs on the fallback, we forfeit most of this category.
 | | |
 | --- | --- |
 | **Model is essential, not superficial** | Gemma does three real reasoning jobs: analyze the business, rank/justify opportunities, draft outreach. This is structured reasoning over grounded inputs, not a single prompt. Good — keep it. |
-| **Local execution, verified** | **Gap / must-do:** ship a real on-device Gemma path (not only the fallback) and make its locality *provable* on demand: an on-screen indicator of which path answered (real Gemma vs. fallback), the model name/size, and the ability to run the whole reasoning flow in **airplane mode** to prove no server is involved. → new **T5a — Real on-device Gemma inference** and its verification in T16/T17. |
+| **Local execution, verified** | Two real transports ship (embedded llama.rn + Ollama; see ON_DEVICE.md), every result carries a surfaced `InferenceMeta.source` badge, and the analysis screen **streams the model's token stream live** — probed model name, wall clock, token count, and reasoning stages that fire as the JSON fields actually arrive (see GEMMA_REASONING.md). Remaining hands-on step: airplane-mode verification on a physical iPhone (ON_DEVICE.md checklist). |
 | **Grounding & tool use** | Places results are the grounding; the interview is structured input; outreach is grounded in the selected opportunity's real attributes (no invented facts). The "Google retrieves, Gemma reasons" split is a coherent architecture story — tell it. |
 | **Technical depth** | Strict JSON contract, schema validation, timeout, and typed domain models between model and UI (T5) demonstrate depth beyond an API call. |
 
@@ -113,7 +113,7 @@ silently runs on the fallback, we forfeit most of this category.
 | | |
 | --- | --- |
 | **Explicit success criteria** | **Gap:** define them (below) in `EVALUATION.md` (T5c). |
-| **Repeatable tests / metrics** | Unit tests exist for JSON parsing + fallback (T5). Extend to a small **evaluation set** of business profiles → expected opportunity categories, plus measured metrics (on-device inference latency, JSON-valid rate, fallback rate). |
+| **Repeatable tests / metrics** | `npm run gemma:eval` (scripts/gemma-eval.mjs) runs the real reasoning tasks across 3 business profiles and enforces the EVALUATION.md criteria — JSON-valid rate, category-valid rate, warm latency p95, grounding coverage — exiting non-zero on any miss. Measured results are recorded in EVALUATION.md. |
 | **Honest edge cases & limitations** | README has a limitations note; expand into a maintained list (no key, model unavailable, malformed JSON, mic denied, offline, sparse Places area). |
 | **Product verifies its own results** | **Gap:** the app should *check* its work, not just claim it — validate Gemma's JSON against the schema, show a confidence score with the evidence behind it, flag low-confidence opportunities, and confirm plan actions succeeded. Surface this verification in the UI. |
 
