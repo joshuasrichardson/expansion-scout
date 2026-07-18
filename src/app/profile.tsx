@@ -10,6 +10,7 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { BusinessProfileInput } from '@/services/gemma';
 import { geocodeCity } from '@/services/places';
+import { clearPlacesCache } from '@/services/placesCache';
 import { useBusiness } from '@/state/business-context';
 import { useOpportunities } from '@/state/opportunities-context';
 import { usePlan } from '@/state/plan-context';
@@ -72,13 +73,14 @@ function ProfileForm() {
       capabilities: splitList(capabilities),
     };
     saveProfile(profile);
-    // A different business means the old session's plan and ranked list are
-    // about someone else — start those clean.
+    // A different business means the old session's plan, ranked list, and
+    // cached place lookups are about someone else — start those clean.
     const sameBusiness =
       !!existing && existing.name === profile.name && existing.type === profile.type;
     if (!sameBusiness) {
       opportunities.reset();
       plan.reset();
+      void clearPlacesCache();
     }
     setSaving(false);
     if (router.canGoBack()) router.back();
@@ -154,6 +156,7 @@ function ProfileForm() {
               return;
             }
             clear();
+            void clearPlacesCache();
             opportunities.reset();
             plan.reset();
             router.replace('/');

@@ -87,3 +87,18 @@ export function entryAgeMs(entry: PlacesCacheEntry): number {
   const t = Date.parse(entry.savedAt);
   return Number.isFinite(t) ? Date.now() - t : Infinity;
 }
+
+/** Forget the cached discovery results (device wipe / business change). */
+export async function clearPlacesCache(): Promise<void> {
+  try {
+    if (Platform.OS === 'web') {
+      globalThis.localStorage?.removeItem(WEB_KEY);
+      return;
+    }
+    const FileSystem = await import('expo-file-system/legacy');
+    if (!FileSystem.documentDirectory) return;
+    await FileSystem.deleteAsync(FileSystem.documentDirectory + FILE_NAME, { idempotent: true });
+  } catch {
+    // Nothing to clear.
+  }
+}
