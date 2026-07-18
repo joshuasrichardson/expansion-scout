@@ -75,10 +75,12 @@ export interface PlaceCandidate {
 /**
  * Bounds on the adaptive interview, enforced in code (not just the prompt) so a
  * small model can never quit after one answer or loop forever. Below MIN we ask
- * again even if Gemma says done; at MAX we force done.
+ * again even if Gemma says done; at MAX we force done. MIN == MAX pins the
+ * interview to an exact length — the demo-friendly setting, since every run
+ * takes the same, predictable number of turns.
  */
 export const MIN_QUESTIONS = 3;
-export const MAX_QUESTIONS = 6;
+export const MAX_QUESTIONS = 3;
 
 /** One completed Q/A exchange in the adaptive discovery interview. */
 export interface InterviewTurn {

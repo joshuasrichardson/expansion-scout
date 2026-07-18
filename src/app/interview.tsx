@@ -77,14 +77,19 @@ export default function InterviewScreen() {
     setThinkingLabel(null);
     setPhase('thinking');
 
+    // At the cap the outcome is forced regardless of what Gemma decides — go
+    // straight to the summary instead of spending a whole inference on a
+    // decision that would be discarded.
+    if (nextHistory.length >= MAX_QUESTIONS) {
+      await finish(nextHistory);
+      return;
+    }
+
     // Gemma reasons about whether it has enough to search — else asks one more.
     const { data: decision } = await interviewStep(nextHistory, onReasoning);
 
-    const atMax = nextHistory.length >= MAX_QUESTIONS;
     const belowMin = nextHistory.length < MIN_QUESTIONS;
-    const shouldStop = atMax || (decision.done && !belowMin);
-
-    if (shouldStop) {
+    if (decision.done && !belowMin) {
       await finish(nextHistory);
       return;
     }
