@@ -385,19 +385,28 @@ export function generateOutreachLocal(
   channel: OutreachChannel,
   tone: OutreachTone,
 ): OutreachDraft {
+  // Introduce the owner (a person) speaking for the business (a company).
+  const me = profile.ownerName?.trim();
   const opener: Record<OutreachTone, string> = {
-    friendly: `Hi there! I'm with ${profile.name}, a local ${profile.type} here in ${profile.city}.`,
-    professional: `Hello, I'm reaching out on behalf of ${profile.name}, a ${profile.type} serving ${profile.city}.`,
-    direct: `I run ${profile.name}, a ${profile.type} in ${profile.city}.`,
+    friendly: me
+      ? `Hi there! I'm ${me} with ${profile.name}, a local ${profile.type} here in ${profile.city}.`
+      : `Hi there! I'm with ${profile.name}, a local ${profile.type} here in ${profile.city}.`,
+    professional: me
+      ? `Hello, this is ${me} from ${profile.name}, a ${profile.type} serving ${profile.city}.`
+      : `Hello, I'm reaching out on behalf of ${profile.name}, a ${profile.type} serving ${profile.city}.`,
+    direct: me
+      ? `I'm ${me} — I run ${profile.name}, a ${profile.type} in ${profile.city}.`
+      : `I run ${profile.name}, a ${profile.type} in ${profile.city}.`,
   };
 
   const edge = profile.capabilities[0] ? ` We're known for ${profile.capabilities[0].toLowerCase()}.` : '';
   const ask = `I'd love to explore working with ${opportunity.name}.${edge} ${opportunity.recommendedAction}`;
+  const signoff = me ? `${me}\n${profile.name}` : profile.name;
 
   const body =
     channel === 'walk-in'
       ? `${opener[tone]} I'm stopping by in person — ${ask}`
-      : `${opener[tone]} ${ask}\n\nWould this week work for a quick chat?\n\n— ${profile.name}`;
+      : `${opener[tone]} ${ask}\n\nWould this week work for a quick chat?\n\n— ${signoff}`;
 
   return {
     channel,

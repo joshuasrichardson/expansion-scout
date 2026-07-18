@@ -786,7 +786,7 @@ function INTERVIEW_SUMMARY_PROMPT(history: InterviewTurn[], base: BusinessProfil
     'Interview:',
     transcript(history),
     'Infer the ideal-customer picture that will drive searches for real nearby places. "locations" must be concrete, searchable place types (e.g. "office parks", "breweries with patios", "weekend sports tournaments").',
-    'Do NOT output the business name, type, city, coordinates, or radius — those are already known. Keep every string under 16 words.',
+    'Do NOT output the owner name, business name, type, city, coordinates, or radius — those are already known. Keep every string under 16 words.',
     'JSON shape: {"description":string,"availability":string,"goals":string[2..3],"capabilities":string[2..3],"customer":{"description":string,"signals":string[2..3],"locations":string[3..5],"outreach":string[2..3]}}',
     JSON_RULES,
   ].join('\n');
@@ -829,16 +829,27 @@ function OUTREACH_PROMPT(
       : channel === 'phone'
         ? 'a 30-second call script: intro line, the concrete offer, one question to land a specific next step.'
         : 'a natural in-person opener (2–4 sentences): who you are, the concrete offer, and the ask.';
+  // The SENDER is the owner (a person) speaking for the business (a company).
+  // Without this split the small model writes "I'm <CompanyName> from <service>".
+  const sender = p.ownerName
+    ? `You are ${p.ownerName}, owner of ${p.name} (a ${p.type} in ${p.city}).`
+    : `You are the owner of ${p.name}, a ${p.type} in ${p.city}.`;
   return [
     `You are drafting a ${tone} ${channel} outreach message for a local business owner. Write ${format}`,
-    `From: ${p.name}, a ${p.type} in ${p.city}.${p.capabilities[0] ? ` Their edge: ${p.capabilities[0]}.` : ''}`,
+    sender,
+    p.ownerName
+      ? `Introduce yourself as ${p.ownerName} from ${p.name}. Never use the company name "${p.name}" as if it were your personal name.`
+      : `Introduce yourself as the owner of ${p.name}. Never present the company name as a person's name.`,
+    p.capabilities[0] ? `Your edge: ${p.capabilities[0]}.` : '',
     `To: ${o.name} (${o.category}). The move: ${o.recommendedAction}`,
     'Lead with what THEY get, not what you want. Make the ask easy to say yes to (a free sample/demo/trial beats a contract). Use ONLY facts given above — do not invent names, numbers, discounts, or offers.',
     channel === 'email'
       ? 'JSON shape: {"subject":string,"body":string}'
       : 'JSON shape: {"body":string}',
     JSON_RULES,
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /* -------------------------------------------------------------------------- */

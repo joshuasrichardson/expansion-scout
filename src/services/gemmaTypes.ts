@@ -33,10 +33,14 @@ export type OutreachTone = 'friendly' | 'professional' | 'direct';
 /** The user's business — captured in the interview, reused everywhere. */
 export interface BusinessProfileInput {
   name: string;
+  /** The owner's name — how outreach introduces the person (not the company). */
+  ownerName?: string;
   /** e.g. "taco truck", "mobile detailer". */
   type: string;
   description?: string;
   city: string;
+  /** Street address, when given — geocoded to center the map precisely. */
+  address?: string;
   latitude: number;
   longitude: number;
   serviceRadiusMiles: number;

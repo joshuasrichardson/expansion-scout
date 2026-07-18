@@ -9,7 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { BusinessProfileInput } from '@/services/gemma';
-import { geocodeCity } from '@/services/places';
+import { geocodeLocation } from '@/services/places';
 import { clearPlacesCache } from '@/services/placesCache';
 import { useBusiness } from '@/state/business-context';
 import { useOpportunities } from '@/state/opportunities-context';
@@ -37,8 +37,10 @@ function ProfileForm() {
   const plan = usePlan();
   const existing = business?.profile;
 
+  const [ownerName, setOwnerName] = useState(existing?.ownerName ?? '');
   const [name, setName] = useState(existing?.name ?? '');
   const [type, setType] = useState(existing?.type ?? '');
+  const [address, setAddress] = useState(existing?.address ?? '');
   const [city, setCity] = useState(existing?.city ?? '');
   const [description, setDescription] = useState(existing?.description ?? '');
   const [radius, setRadius] = useState(String(existing?.serviceRadiusMiles ?? 10));
@@ -48,22 +50,27 @@ function ProfileForm() {
   const [saving, setSaving] = useState(false);
   const [confirmForget, setConfirmForget] = useState(false);
 
-  const canSave = name.trim() && type.trim() && city.trim() && !saving;
+  const canSave = ownerName.trim() && name.trim() && type.trim() && city.trim() && !saving;
 
   async function handleSave() {
     if (!canSave) return;
     setSaving(true);
 
-    // Best-effort geocode so the map and distances are real; without a Places
-    // key (or offline) the profile still works — targets derive from the radius.
-    const cityChanged = city.trim() !== existing?.city;
-    const location =
-      cityChanged || !existing ? await geocodeCity(city) : null;
+    // Best-effort geocode so the map centers on the business and distances are
+    // real. A full street address gives a precise pin; city alone is the
+    // fallback. Without a Places key (or offline) the profile still works —
+    // targets derive from the radius.
+    const locationChanged =
+      address.trim() !== (existing?.address ?? '') || city.trim() !== (existing?.city ?? '');
+    const geoQuery = [address.trim(), city.trim()].filter(Boolean).join(', ');
+    const location = locationChanged || !existing ? await geocodeLocation(geoQuery) : null;
 
     const profile: BusinessProfileInput = {
       name: name.trim(),
+      ownerName: ownerName.trim(),
       type: type.trim().toLowerCase(),
       description: description.trim() || undefined,
+      address: address.trim() || undefined,
       city: city.trim(),
       latitude: location?.latitude ?? existing?.latitude ?? 0,
       longitude: location?.longitude ?? existing?.longitude ?? 0,
@@ -74,12 +81,17 @@ function ProfileForm() {
     };
     saveProfile(profile);
     // A different business means the old session's plan, ranked list, and
-    // cached place lookups are about someone else — start those clean.
+    // cached place lookups are about someone else — start those clean. Moving
+    // an existing business's location invalidates the ranked plan + cache too
+    // (both are keyed to coordinates), but keeps the committed plan stops.
     const sameBusiness =
       !!existing && existing.name === profile.name && existing.type === profile.type;
     if (!sameBusiness) {
       opportunities.reset();
       plan.reset();
+      void clearPlacesCache();
+    } else if (locationChanged && location) {
+      opportunities.reset();
       void clearPlacesCache();
     }
     setSaving(false);
@@ -97,8 +109,15 @@ function ProfileForm() {
       </View>
 
       <Card>
+        <Field label="YOUR NAME" value={ownerName} onChangeText={setOwnerName} placeholder="e.g. Maria" />
         <Field label="BUSINESS NAME" value={name} onChangeText={setName} placeholder="e.g. Tacos La Familia" />
         <Field label="WHAT KIND OF BUSINESS" value={type} onChangeText={setType} placeholder="e.g. taco truck, mobile detailer" />
+        <Field
+          label="STREET ADDRESS (OPTIONAL)"
+          value={address}
+          onChangeText={setAddress}
+          placeholder="e.g. 400 W Center St — centers the map on you"
+        />
         <Field label="CITY" value={city} onChangeText={setCity} placeholder="e.g. Provo, UT" />
         <Field
           label="SERVICE RADIUS (MILES)"

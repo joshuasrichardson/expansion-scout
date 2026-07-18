@@ -380,18 +380,19 @@ function fallbackAfterFailure(
 }
 
 /**
- * Best-effort city → coordinates via the same Text Search endpoint. Returns
- * null without a key or on any failure — callers treat location as optional.
+ * Best-effort location string → coordinates via the same Text Search endpoint.
+ * Pass a full street address for a precise center, or just a city as a fallback.
+ * Returns null without a key or on any failure — callers treat location as optional.
  */
-export async function geocodeCity(
-  city: string,
+export async function geocodeLocation(
+  query: string,
 ): Promise<{ latitude: number; longitude: number } | null> {
-  if (!PlacesConfig.enabled || !city.trim()) return null;
+  if (!PlacesConfig.enabled || !query.trim()) return null;
   try {
-    const results = await searchText(city.trim(), {
+    const results = await searchText(query.trim(), {
       name: '',
       type: '',
-      city,
+      city: query,
       latitude: 0,
       longitude: 0,
       serviceRadiusMiles: 0,
