@@ -15,6 +15,8 @@ import {
   type BusinessAnalysis,
   type BusinessProfileInput,
   type CustomerProfile,
+  type CustomerSegment,
+  type CustomerSegmentType,
   type InterviewDecision,
   type InterviewProfile,
   type InterviewTurn,
@@ -130,12 +132,13 @@ function splitLocations(where?: string): string[] | null {
   return parts.length ? parts.slice(0, 5) : null;
 }
 
-export function analyzeBusinessLocal(profile: BusinessProfileInput): BusinessAnalysis {
+export function analyzeBusinessLocal(profile: BusinessProfileInput | InterviewProfile): BusinessAnalysis {
   const goal = profile.goals[0]?.toLowerCase() ?? '';
   const wantsRecurring = /recur|steady|regular|catering|contract/.test(goal);
   const recommended: OpportunityCategory[] = wantsRecurring
     ? ['catering', 'partnership', 'lunch', 'event']
     : ['partnership', 'lunch', 'catering', 'event'];
+  const customer = 'customer' in profile ? profile.customer : undefined;
 
   return {
     summary: `${profile.name} is a ${profile.type} in ${profile.city} serving within ${profile.serviceRadiusMiles} miles. The clearest path to growth is turning one-off sales into recurring, predictable revenue nearby.`,
@@ -148,7 +151,108 @@ export function analyzeBusinessLocal(profile: BusinessProfileInput): BusinessAna
       ? 'Land one recurring customer (catering or a standing partnership) this week'
       : 'Put the truck where hungry crowds already gather at predictable times',
     recommendedCategories: recommended,
+    targetSegments: segmentsFromCategories(recommended, customer),
   };
+}
+
+/**
+ * A per-category segment template — the deterministic mapping from an opportunity
+ * category to the *kind* of customer it represents, with its discovery method and
+ * reach channel. `segmentsFromCategories` personalizes the label/discovery from the
+ * owner's own answers (`customer.locations`) when they match, else uses the template.
+ */
+const CATEGORY_SEGMENT: Record<
+  OpportunityCategory,
+  Omit<CustomerSegment, 'category'> & { keywords: RegExp }
+> = {
+  lunch: {
+    type: 'physical-business',
+    reach: 'walk-in',
+    label: 'Nearby workplaces at lunch',
+    whoTheyAre: 'Office crowds with few fast lunch options',
+    discovery: 'Search Maps for office parks within your radius',
+    why: 'Steady weekday demand fills slow afternoons',
+    keywords: /office|campus|company|tech|business park|workplace/i,
+  },
+  partnership: {
+    type: 'physical-business',
+    reach: 'walk-in',
+    label: 'Venues without a kitchen',
+    whoTheyAre: 'Breweries & taprooms whose guests want food',
+    discovery: 'Search Maps for breweries and bars nearby',
+    why: 'Recurring foot traffic with a built-in crowd',
+    keywords: /brewery|bar|taproom|pub|venue|apartment|complex|hoa|resident/i,
+  },
+  catering: {
+    type: 'event-venue',
+    reach: 'email',
+    label: 'Offices & venues that host events',
+    whoTheyAre: 'Workplaces booking group lunches and parties',
+    discovery: 'Search Maps for corporate offices & event venues',
+    why: 'High-ticket, recurring catering orders',
+    keywords: /corporate|event|wedding|resort|conference|banquet/i,
+  },
+  event: {
+    type: 'public-gathering',
+    reach: 'phone',
+    label: 'Weekend events & tournaments',
+    whoTheyAre: 'Families gathering at recurring local events',
+    discovery: 'Check event calendars for markets & tournaments',
+    why: 'High-volume weekend sales when you are free',
+    keywords: /market|festival|fair|tournament|game|sport|gathering/i,
+  },
+};
+
+// Some locations imply a residential archetype more specifically than the
+// partnership template's default "physical-business" — refine after matching.
+const RESIDENTIAL = /apartment|complex|hoa|resident|housing|neighborhood/i;
+
+/**
+ * Build 3–5 target customer segments deterministically. Guarantees coverage of
+ * the recommended categories (so the list is never empty offline), and, when the
+ * owner named concrete places in the interview, personalizes the matching segment
+ * from their own words. Shared by the Gemma path (synthesize-when-empty) and the
+ * offline fallback, so both produce the same shape.
+ */
+export function segmentsFromCategories(
+  categories: OpportunityCategory[],
+  customer?: CustomerProfile,
+): CustomerSegment[] {
+  const cats: OpportunityCategory[] = categories.length ? categories : ['catering', 'partnership'];
+  const locations = customer?.locations ?? [];
+  const seen = new Set<OpportunityCategory>();
+  const segments: CustomerSegment[] = [];
+
+  for (const cat of cats) {
+    if (seen.has(cat)) continue;
+    seen.add(cat);
+    const t = CATEGORY_SEGMENT[cat];
+    const match = locations.find((l) => t.keywords.test(l));
+    let type: CustomerSegmentType = t.type;
+    let reach: OutreachChannel = t.reach;
+    if (match && RESIDENTIAL.test(match)) {
+      type = 'residential-community';
+      reach = 'phone';
+    }
+    segments.push({
+      label: match ? titleCase(match) : t.label,
+      type,
+      whoTheyAre: t.whoTheyAre,
+      discovery: match ? `Search Maps for ${match.toLowerCase()} nearby` : t.discovery,
+      reach,
+      why: t.why,
+      category: cat,
+    });
+    if (segments.length >= 5) break;
+  }
+
+  return segments;
+}
+
+/** Title-case a short free-text place phrase for use as a segment label. */
+function titleCase(s: string): string {
+  const cleaned = s.trim().replace(/\s+/g, ' ');
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 /**

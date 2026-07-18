@@ -30,13 +30,17 @@ import {
   generateOutreachLocal,
   interviewStepLocal,
   rankOpportunitiesLocal,
+  segmentsFromCategories,
   summarizeInterviewLocal,
 } from './opportunityRanking';
 import {
+  CUSTOMER_SEGMENT_TYPES,
   OPPORTUNITY_CATEGORIES,
   type BusinessAnalysis,
   type BusinessProfileInput,
   type CustomerProfile,
+  type CustomerSegment,
+  type CustomerSegmentType,
   type InferenceMeta,
   type InterviewDecision,
   type InterviewProfile,
@@ -253,13 +257,13 @@ export async function warmUpGemma(): Promise<boolean> {
 /* -------------------------------------------------------------------------- */
 
 export async function analyzeBusiness(
-  profile: BusinessProfileInput,
+  profile: BusinessProfileInput | InterviewProfile,
 ): Promise<WithMeta<BusinessAnalysis>> {
   return run(
     ANALYZE_PROMPT(profile),
     (raw) => validateAnalysis(raw),
     () => analyzeBusinessLocal(profile),
-    { maxTokens: 400 },
+    { maxTokens: 600 },
   );
 }
 
@@ -442,6 +446,39 @@ export function coerceCategory(v: unknown): OpportunityCategory | null {
   return null;
 }
 
+/** Coerce free-text segment-type guesses onto our closed archetype set. */
+export function coerceSegmentType(v: unknown): CustomerSegmentType | null {
+  if (typeof v !== 'string') return null;
+  const s = v.toLowerCase();
+  const exact = CUSTOMER_SEGMENT_TYPES.find((t) => t === s);
+  if (exact) return exact;
+  if (/apartment|resident|hoa|housing|community|neighborhood/.test(s)) return 'residential-community';
+  if (/event|venue|resort|wedding|sport|complex|arena/.test(s)) return 'event-venue';
+  if (/market|festival|fair|gathering|tournament|street/.test(s)) return 'public-gathering';
+  if (/partner|nonprofit|school|church|org|club/.test(s)) return 'partner-org';
+  if (/office|business|brewery|bar|retail|store|campus|company/.test(s)) return 'physical-business';
+  return null;
+}
+
+/** Coerce free-text reach/channel guesses onto our closed outreach-channel set. */
+export function coerceReach(v: unknown): OutreachChannel | null {
+  if (typeof v !== 'string') return null;
+  const s = v.toLowerCase();
+  if (/walk|in.?person|visit|drop.?by|door/.test(s)) return 'walk-in';
+  if (/phone|call|text|sms/.test(s)) return 'phone';
+  if (/email|mail|message|form/.test(s)) return 'email';
+  return null;
+}
+
+/** Default reach for a segment type, when the model omits or garbles it. */
+const SEGMENT_DEFAULT_REACH: Record<CustomerSegmentType, OutreachChannel> = {
+  'physical-business': 'walk-in',
+  'residential-community': 'phone',
+  'event-venue': 'email',
+  'public-gathering': 'phone',
+  'partner-org': 'walk-in',
+};
+
 function clampScore(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(v);
   if (!Number.isFinite(n)) return 60;
@@ -457,12 +494,56 @@ export function validateAnalysis(raw: unknown): BusinessAnalysis {
   const recommended = asStringArray(o.recommendedCategories, 4)
     .map(coerceCategory)
     .filter((c): c is OpportunityCategory => c !== null);
+  const recommendedCategories: OpportunityCategory[] = recommended.length
+    ? dedupe(recommended)
+    : ['catering', 'partnership'];
   return {
     summary,
     focus,
     strengths: asStringArray(o.strengths, 4),
-    recommendedCategories: recommended.length ? dedupe(recommended) : ['catering', 'partnership'],
+    recommendedCategories,
+    targetSegments: validateSegments(o.targetSegments, recommendedCategories),
   };
+}
+
+function asString(v: unknown): string {
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+/** Parse one model segment, dropping it unless the closed-set fields survive. */
+function parseSegment(raw: unknown): CustomerSegment | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const type = coerceSegmentType(o.type);
+  const category = coerceCategory(o.category);
+  const label = asString(o.label);
+  if (!type || !category || !label) return null;
+  return {
+    label,
+    type,
+    whoTheyAre: asString(o.whoTheyAre),
+    discovery: asString(o.discovery),
+    reach: coerceReach(o.reach) ?? SEGMENT_DEFAULT_REACH[type],
+    why: asString(o.why),
+    category,
+  };
+}
+
+/**
+ * Validate the model's target segments; if none survive, synthesize a sensible
+ * set from the recommended categories so the "who to look for" field is never
+ * empty (the thinking screen always has cards to reveal).
+ */
+export function validateSegments(
+  raw: unknown,
+  recommendedCategories: OpportunityCategory[],
+): CustomerSegment[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  const parsed = arr
+    .map(parseSegment)
+    .filter((s): s is CustomerSegment => s !== null)
+    .slice(0, 5);
+  return parsed.length ? parsed : segmentsFromCategories(recommendedCategories);
 }
 
 /** A safe next question when the model flags "not done" but omits one. */
@@ -580,15 +661,34 @@ export function validateOutreach(
 const JSON_RULES =
   'Respond with ONLY a single minified JSON value. No markdown, no prose, no explanation of your reasoning.';
 
-function ANALYZE_PROMPT(p: BusinessProfileInput): string {
+/**
+ * The customer taxonomy Gemma classifies prospects into — keyed by HOW each kind
+ * is discovered and reached, so a discovery strategy + outreach channel follow
+ * from the type. Kept compact and closed so the small model stays on-contract.
+ */
+const CUSTOMER_TAXONOMY = [
+  'physical-business (offices, breweries, retail — found on Maps, reached by walk-in/phone)',
+  'residential-community (apartments, HOAs — found on Maps, reached via property manager)',
+  'event-venue (sports complexes, resorts, wedding venues — found on Maps/listings, reached by email/phone)',
+  'public-gathering (markets, festivals, tournaments — found via event calendars/social, reached via organizer)',
+  'partner-org (complementary local orgs to co-market with — found on Maps, reached by walk-in)',
+].join(' · ');
+
+function ANALYZE_PROMPT(p: BusinessProfileInput | InterviewProfile): string {
+  const customer = 'customer' in p ? p.customer : undefined;
   return [
     'You are an experienced local-business growth consultant.',
     `Business: ${p.name}, a ${p.type} in ${p.city}. Serves within ${p.serviceRadiusMiles} miles.`,
     p.availability ? `Availability: ${p.availability}.` : '',
     `Goals: ${p.goals.join('; ') || 'grow revenue'}.`,
     `Capabilities: ${p.capabilities.join('; ') || 'core service'}.`,
+    customer ? `Ideal customer so far: ${customer.description}. Gathers at: ${customer.locations.join(', ')}.` : '',
     'Analyze where this business should focus to grow.',
-    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("partnership"|"lunch"|"catering"|"event")[]}',
+    'Then decide WHAT KINDS OF CUSTOMERS to look for. Classify each into exactly one type from this taxonomy, and give its discovery method (how to FIND them) and reach channel (how to CONTACT them):',
+    CUSTOMER_TAXONOMY,
+    'Return 3–5 target segments, best-first, grounded in this business — never generic.',
+    '"type" is one of: physical-business|residential-community|event-venue|public-gathering|partner-org. "reach" is one of: walk-in|phone|email. "category" is one of: partnership|lunch|catering|event. Keep every string under 14 words.',
+    'JSON shape: {"summary":string,"strengths":string[2..3],"focus":string,"recommendedCategories":("partnership"|"lunch"|"catering"|"event")[],"targetSegments":[{"label":string,"type":string,"whoTheyAre":string,"discovery":string,"reach":string,"why":string,"category":string}]}',
     JSON_RULES,
   ]
     .filter(Boolean)

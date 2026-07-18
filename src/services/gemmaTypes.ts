@@ -104,6 +104,47 @@ export interface InterviewProfile extends BusinessProfileInput {
   customer: CustomerProfile;
 }
 
+/**
+ * Curated prospect archetypes for field/local operators, keyed by HOW a customer
+ * is *found* and *reached* (discoverability + contactability) rather than by
+ * industry. This is what lets Gemma pick a discovery strategy and an outreach
+ * channel per kind of customer.
+ */
+export type CustomerSegmentType =
+  | 'physical-business' // offices, breweries, retail — find on Maps, reach walk-in/phone
+  | 'residential-community' // apartments, HOAs — find on Maps, reach the property manager
+  | 'event-venue' // sports complexes, resorts, wedding venues — Maps/listings, reach email/phone
+  | 'public-gathering' // farmers markets, festivals, tournaments — event calendars/social, reach organizer
+  | 'partner-org'; // complementary local orgs to co-market with — Maps, reach walk-in
+
+export const CUSTOMER_SEGMENT_TYPES: readonly CustomerSegmentType[] = [
+  'physical-business',
+  'residential-community',
+  'event-venue',
+  'public-gathering',
+  'partner-org',
+] as const;
+
+/**
+ * One *kind* of customer Gemma decides to look for, with the discovery and reach
+ * strategy that follows from its type. `category` bridges the segment to the
+ * place-search + ranking layer so "who to look for" shapes "where to go."
+ */
+export interface CustomerSegment {
+  /** Human label, e.g. "Nearby office campuses". */
+  label: string;
+  type: CustomerSegmentType;
+  /** Who they are, in one line. */
+  whoTheyAre: string;
+  /** How to FIND them (Maps / event calendars / social) — discoverability. */
+  discovery: string;
+  /** How to REACH them — contactability. */
+  reach: OutreachChannel;
+  /** Why they fit this business right now. */
+  why: string;
+  category: OpportunityCategory;
+}
+
 /** Gemma's read on the business — feeds opportunity ranking. */
 export interface BusinessAnalysis {
   summary: string;
@@ -111,6 +152,8 @@ export interface BusinessAnalysis {
   /** The single growth focus for today, in the owner's language. */
   focus: string;
   recommendedCategories: OpportunityCategory[];
+  /** The kinds of customers to look for, typed by how they're found & reached. */
+  targetSegments: CustomerSegment[];
 }
 
 /** One ranked, reasoned opportunity. Surfaced to the UI; no chain-of-thought. */

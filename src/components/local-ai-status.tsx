@@ -17,7 +17,7 @@ import { Card } from '@/components/card';
 import { PrimaryButton } from '@/components/primary-button';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
-import { demoBusiness, demoCandidates } from '@/data/demo';
+import { demoBusiness } from '@/data/demo';
 import { useTheme } from '@/hooks/use-theme';
 import {
   analyzeBusiness,
@@ -34,11 +34,14 @@ import {
   ModelConfig,
   type DownloadProgress,
 } from '@/services/modelManager';
+import { getPlaceCandidates, type PlacesResult } from '@/services/places';
 
 type SampleRun = {
   meta: InferenceMeta;
   focus: string;
   top: RankedOpportunity;
+  placesSource: PlacesResult['source'];
+  candidateCount: number;
 };
 
 export function LocalAiStatus() {
@@ -90,10 +93,20 @@ export function LocalAiStatus() {
     setRunning(true);
     setSample(null);
     try {
+      // Google discovers, Gemma reasons — exercise the real path end to end.
+      const places = await getPlaceCandidates(demoBusiness);
       const analysis = await analyzeBusiness(demoBusiness);
-      const ranked = await rankOpportunities(demoBusiness, analysis.data, demoCandidates);
+      const ranked = await rankOpportunities(demoBusiness, analysis.data, places.candidates);
       const top = ranked.data[0];
-      if (top) setSample({ meta: ranked.meta, focus: analysis.data.focus, top });
+      if (top) {
+        setSample({
+          meta: ranked.meta,
+          focus: analysis.data.focus,
+          top,
+          placesSource: places.source,
+          candidateCount: places.candidates.length,
+        });
+      }
       await refresh();
     } finally {
       setRunning(false);
@@ -192,6 +205,12 @@ export function LocalAiStatus() {
               {sample.meta.latencyMs}ms · {sample.meta.validated ? 'schema-validated' : 'repaired'}
             </ThemedText>
           </View>
+
+          <ThemedText type="caption" themeColor="textMuted">
+            {sample.placesSource === 'live'
+              ? `${sample.candidateCount} places discovered via Google Places`
+              : `${sample.candidateCount} demo places (no Places key)`}
+          </ThemedText>
 
           <ThemedText type="smallBold">Today&apos;s focus</ThemedText>
           <ThemedText type="small" themeColor="textSecondary">

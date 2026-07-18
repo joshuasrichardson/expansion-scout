@@ -5,12 +5,14 @@ import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { InterviewProvider } from '@/state/interview-context';
+import { OpportunitiesProvider } from '@/state/opportunities-context';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <InterviewProvider>
+        <OpportunitiesProvider>
         <AnimatedSplashOverlay />
         <StatusBar style="auto" />
         <Stack>
@@ -24,6 +26,7 @@ export default function RootLayout() {
         <Stack.Screen name="plan" options={{ title: "Today's Plan" }} />
           <Stack.Screen name="design-system" options={{ title: 'Design System' }} />
         </Stack>
+        </OpportunitiesProvider>
       </InterviewProvider>
     </ThemeProvider>
   );
